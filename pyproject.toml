@@ -1,0 +1,46 @@
+[tool.poetry]
+authors=["Tyler Romero"]
+description="A small VLLM for research"
+name="seahorse"
+version="0.1.0"
+readme="README.md"
+
+[tool.poetry.dependencies]
+transformers="^4.42.3"
+triton="^2.3.0"
+datasets="^2.20.0"
+pillow="^10.4.0"
+pydantic = "^2.8.0"
+schedulefree = "^1.2.6"
+peft = "^0.11.1"
+timm = "^1.0.7"
+matplotlib = "^3.8.4"
+numpy = "^1.26.4"
+python = "~3.11"
+flash-attn = {url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.5.9.post1/flash_attn-2.5.9.post1+cu122torch2.3cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"}
+unsloth = { git = "https://github.com/unslothai/unsloth.git", rev = "9b4cc934efec66abd0a77df011779b393a99c026", extras = ["cu121-ampere-torch230"] }
+bitsandbytes = "^0.43.1"
+xformers = "^0.0.26.post1"
+devtools = "^0.12.2"
+trl = "^0.9.4"
+wandb = "^0.17.4"
+
+[tool.poetry.group.dev.dependencies]
+ipython = "^8.7.0"
+pytest = "^7.4.3"
+
+[tool.poetry.group.pytorch.dependencies]
+torch = "^2.3.0"
+torchvision = "^0.18.0"
+
+[tool.poetry.group.nvidia.dependencies]
+nvidia-cudnn-cu12 = "*"
+nvidia-cublas-cu12 = "*"
+nvidia-cusolver-cu12 = "*"
+nvidia-cusparse-cu12 = "*"
+nvidia-cufft-cu12 = "*"
+nvidia-nccl-cu12 = "*"
+
+[build-system]
+build-backend = "poetry.core.masonry.api"
+requires = ["poetry-core>=1.8.3"]

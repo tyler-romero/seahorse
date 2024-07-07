@@ -68,13 +68,9 @@ class TimmEncoder(nn.Module):
         else:
             raise ValueError("Input must be a PIL image, list of PIL images, or a tensor")
 
-    def forward(self, images: PILImage | list[PILImage] | torch.FloatTensor) -> torch.FloatTensor:
-        """Forward pass through the model, return patch embeddings (B, T_x, T_y, C)"""
-        batch = self.preprocess(images)
-        batch = batch.to(self.device, self.dtype)
-
-        # forward_features skips the final pooling layer
-        patch_embeddings = self.timm_model.forward_features(batch)
+    @torch.compile
+    def encode(self, pixel_values: torch.Tensor) -> torch.Tensor:
+        patch_embeddings = self.timm_model.forward_features(pixel_values)
 
         if self.timm_model.has_class_token:  # Remove the CLS token
             patch_embeddings = patch_embeddings[:, 1:, :]  # TODO: pass this through too
@@ -83,3 +79,9 @@ class TimmEncoder(nn.Module):
             -1, self.num_patches_x, self.num_patches_y, patch_embeddings.shape[-1]
         )
         return patch_embeddings
+
+    def forward(self, images: PILImage | list[PILImage] | torch.FloatTensor) -> torch.Tensor:
+        """Forward pass through the model, return patch embeddings (B, T_x, T_y, C)"""
+        pixel_values = self.preprocess(images)
+        pixel_values = pixel_values.to(self.device, self.dtype)
+        return self.encode(pixel_values)

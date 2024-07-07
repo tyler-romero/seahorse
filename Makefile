@@ -20,6 +20,12 @@ export PRINT_HELP_PYSCRIPT
 help: ## Print a description of all targets
 	@python -c "$$PRINT_HELP_PYSCRIPT" < $(MAKEFILE_LIST)
 
+install-env: ## Create a new environment and install seahorse dependencies into it
+	bash create_python_env.sh seahorse
+
+install:  ## Install seahorse dependencies
+	poetry install
+
 TEST_ARGS =
 
 test: ## Run tests (may require a GPU)

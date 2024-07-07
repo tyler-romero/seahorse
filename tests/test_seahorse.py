@@ -1,11 +1,12 @@
 import time
+from unittest.mock import patch
 
 import pytest
 import torch
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from seahorse.data.utils import random_pil
-from seahorse.models.seahorse import DEFAULT_IMAGE_TOKEN, IGNORE_INDEX, SeahorseModel
+from seahorse.models.seahorse import DEFAULT_IMAGE_TOKEN, LABEL_IGNORE_INDEX, SeahorseModel
 
 
 @pytest.fixture(scope="module")
@@ -26,6 +27,69 @@ def seahorse():
     return model
 
 
+def test_seahorse_generate(seahorse: SeahorseModel):
+    prompt = DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?"
+    preprocessed_img = seahorse.preprocess_image([random_pil()])
+    tokens = seahorse.tokenize_text(prompt)
+
+    with patch.object(
+        seahorse, "merge_text_and_image_tokens", wraps=seahorse.merge_text_and_image_tokens
+    ) as mock_merge:
+        generate_ids = seahorse.generate(
+            input_ids=tokens.input_ids.to(seahorse.device),
+            pixel_values=preprocessed_img.to(seahorse.device),
+            attention_mask=tokens.attention_mask.to(seahorse.device),
+            max_new_tokens=5,
+        )
+        mock_merge.assert_called_once()  # called once then cache takes over
+    assert generate_ids.ndim == 2
+    assert generate_ids.shape[0] == 1
+    assert generate_ids.shape[1] > tokens.input_ids.shape[1], "Generated tokens should be longer"
+
+
+def test_seahorse_generate_no_cache(seahorse: SeahorseModel):
+    prompt = DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?"
+    preprocessed_img = seahorse.preprocess_image([random_pil()])
+    tokens = seahorse.tokenize_text(prompt)
+
+    with patch.object(
+        seahorse, "merge_text_and_image_tokens", wraps=seahorse.merge_text_and_image_tokens
+    ) as mock_merge:
+        generate_ids = seahorse.generate(
+            input_ids=tokens.input_ids.to(seahorse.device),
+            pixel_values=preprocessed_img.to(seahorse.device),
+            attention_mask=tokens.attention_mask.to(seahorse.device),
+            max_new_tokens=5,
+            use_cache=False,  # Simple autoregressive generation without cache
+        )
+        mock_merge.assert_called()  # w/o cache will call merge_text_and_image_tokens multiple times
+    assert generate_ids.ndim == 2
+    assert generate_ids.shape[0] == 1
+    assert generate_ids.shape[1] > tokens.input_ids.shape[1], "Generated tokens should be longer"
+
+
+# def test_seahorse_unsloth_generate_no_cache():
+#     seahorse = SeahorseModel(config=SeahorseUnslothConfig())
+#     prompt = DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?"
+#     preprocessed_img = seahorse.preprocess_image([random_pil()])
+#     tokens = seahorse.tokenize_text(prompt)
+
+#     with patch.object(
+#         seahorse, "merge_text_and_image_tokens", wraps=seahorse.merge_text_and_image_tokens
+#     ) as mock_merge:
+#         generate_ids = seahorse.generate(
+#             input_ids=tokens.input_ids.to(seahorse.device),
+#             pixel_values=preprocessed_img.to(seahorse.device),
+#             attention_mask=tokens.attention_mask.to(seahorse.device),
+#             max_new_tokens=5,
+#             use_cache=False,  # Simple autoregressive generation without cache
+#         )
+#         mock_merge.assert_called()  # w/o cache will call merge_text_and_image_tokens multiple times
+#     assert generate_ids.ndim == 2
+#     assert generate_ids.shape[0] == 1
+#     assert generate_ids.shape[1] > tokens.input_ids.shape[1], "Generated tokens should be longer"
+
+
 def test_seahorse_batched_inference(seahorse: SeahorseModel):
     prompt = DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?"
     tokens = seahorse.tokenize_text([prompt, prompt])
@@ -33,11 +97,15 @@ def test_seahorse_batched_inference(seahorse: SeahorseModel):
     assert tokens.input_ids.shape[0] == 2, "Tokenized prompts should have batch size of 2"
     assert preprocessed_imgs.shape[0] == 2, "Preprocessed images should have batch size of 2"
 
-    out: CausalLMOutputWithPast = seahorse(
-        input_ids=tokens.input_ids.to(seahorse.device),
-        pixel_values=preprocessed_imgs.to(seahorse.device),
-        attention_mask=tokens.attention_mask.to(seahorse.device),
-    )
+    with patch.object(
+        seahorse, "merge_text_and_image_tokens", wraps=seahorse.merge_text_and_image_tokens
+    ) as mock_merge:
+        out: CausalLMOutputWithPast = seahorse(
+            input_ids=tokens.input_ids.to(seahorse.device),
+            pixel_values=preprocessed_imgs.to(seahorse.device),
+            attention_mask=tokens.attention_mask.to(seahorse.device),
+        )
+        mock_merge.assert_called_once()
     assert isinstance(out, CausalLMOutputWithPast)
     assert out.logits.shape[0] == 2, "Batch size should be 2"
 
@@ -47,10 +115,15 @@ def test_seahorse_batched_inference_no_image(seahorse: SeahorseModel):
     tokens = seahorse.tokenize_text([prompt, prompt])
     assert tokens.input_ids.shape[0] == 2, "Tokenized prompts should have batch size of 2"
 
-    out: CausalLMOutputWithPast = seahorse(
-        input_ids=tokens.input_ids.to(seahorse.device),
-        attention_mask=tokens.attention_mask.to(seahorse.device),
-    )
+    with patch.object(
+        seahorse, "merge_text_and_image_tokens", wraps=seahorse.merge_text_and_image_tokens
+    ) as mock_merge:
+        out: CausalLMOutputWithPast = seahorse(
+            input_ids=tokens.input_ids.to(seahorse.device),
+            attention_mask=tokens.attention_mask.to(seahorse.device),
+        )
+        mock_merge.assert_not_called()
+
     assert isinstance(out, CausalLMOutputWithPast)
     assert out.logits.shape[0] == 2, "Batch size should be 2"
 
@@ -59,21 +132,30 @@ def test_seahorse_inference(seahorse: SeahorseModel):
     prompt = DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?"
     tokens = seahorse.tokenize_text(prompt)
     preprocessed_img = seahorse.preprocess_image([random_pil()])
-    out: CausalLMOutputWithPast = seahorse(
-        input_ids=tokens.input_ids.to(seahorse.device),
-        pixel_values=preprocessed_img.to(seahorse.device),
-        attention_mask=tokens.attention_mask.to(seahorse.device),
-    )
+
+    with patch.object(
+        seahorse, "merge_text_and_image_tokens", wraps=seahorse.merge_text_and_image_tokens
+    ) as mock_merge:
+        out: CausalLMOutputWithPast = seahorse(
+            input_ids=tokens.input_ids.to(seahorse.device),
+            pixel_values=preprocessed_img.to(seahorse.device),
+            attention_mask=tokens.attention_mask.to(seahorse.device),
+        )
+        mock_merge.assert_called_once()
     assert isinstance(out, CausalLMOutputWithPast)
     assert out.logits.shape[0] == 1, "Batch size should be 1"
 
 
 def test_seahorse_merge_text_and_image_tokens(seahorse: SeahorseModel):
-    tokens = seahorse.tokenize_text("<|user|>\n" + DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?")
+    tokens = seahorse.tokenize_text(
+        "<|user|>\n" + DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?", pad_to_multiple_of=1
+    )
     projected_patch_embeddings = seahorse.encode_and_project_image(random_pil())
-    merged_token_embeddings, merged_attention_mask, merged_labels = (
+    text_embeds = seahorse.get_input_embeddings()(tokens.input_ids.to(seahorse.device))
+    merged_token_embeddings, merged_attention_mask, merged_labels, merged_position_ids = (
         seahorse.merge_text_and_image_tokens(
             tokens.input_ids.to(seahorse.device),
+            text_embeds=text_embeds,
             image_patch_embeds=projected_patch_embeddings,
             attention_mask=tokens.attention_mask.to(seahorse.device),
             text_labels=None,
@@ -85,6 +167,12 @@ def test_seahorse_merge_text_and_image_tokens(seahorse: SeahorseModel):
     assert merged_attention_mask.shape[0] == 1
     assert merged_attention_mask.shape[1] == merged_token_embeddings.shape[1]
     assert merged_labels is None, "Labels should be None for inference (no text_labels provided)"
+    expected_position_ids = torch.arange(
+        merged_position_ids.shape[1], device=seahorse.device
+    ).unsqueeze(0)
+    assert torch.all(
+        merged_position_ids == expected_position_ids
+    ), "Position IDs should count up from 0"
 
     batch_queries = [
         "<|user|>\n" + DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?",
@@ -92,10 +180,12 @@ def test_seahorse_merge_text_and_image_tokens(seahorse: SeahorseModel):
     ]
     tokens = seahorse.tokenize_text(batch_queries)
     projected_patch_embeddings = seahorse.encode_and_project_image([random_pil(), random_pil()])
-    merged_token_embeddings, merged_attention_mask, merged_labels = (
+    text_embeds = seahorse.get_input_embeddings()(tokens.input_ids.to(seahorse.device))
+    merged_token_embeddings, merged_attention_mask, merged_labels, merged_position_ids = (
         seahorse.merge_text_and_image_tokens(
             tokens.input_ids.to(seahorse.device),
-            projected_patch_embeddings,
+            text_embeds=text_embeds,
+            image_patch_embeds=projected_patch_embeddings,
             attention_mask=tokens.attention_mask.to(seahorse.device),
             text_labels=tokens.input_ids.clone().to(seahorse.device),
         )
@@ -106,7 +196,13 @@ def test_seahorse_merge_text_and_image_tokens(seahorse: SeahorseModel):
     assert merged_attention_mask.shape[0] == 2
     assert merged_attention_mask.shape[1] == merged_token_embeddings.shape[1]
     assert merged_labels.shape[0] == 2
-    assert torch.all(torch.any(merged_labels == IGNORE_INDEX, dim=1))
+    assert torch.all(torch.any(merged_labels == LABEL_IGNORE_INDEX, dim=1))
+    assert merged_position_ids.shape[0] == 2
+    assert merged_position_ids.shape[1] == merged_token_embeddings.shape[1]
+    # padded query should start with 1s for position ids
+    assert torch.all(
+        merged_position_ids[0, 0:2] == 1
+    ), "First query should start with 1s for position ids (padding)"
 
 
 def test_seahorse_encode_and_project_image(seahorse: SeahorseModel):
@@ -117,7 +213,9 @@ def test_seahorse_encode_and_project_image(seahorse: SeahorseModel):
 
 
 def test_seahorse_tokenizer(seahorse: SeahorseModel):
-    tokens = seahorse.tokenize_text(DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?")
+    tokens = seahorse.tokenize_text(
+        DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?", pad_to_multiple_of=1
+    )
     input_ids = tokens.input_ids
     assert input_ids.ndim == 2
     assert input_ids.shape[0] == 1
@@ -127,11 +225,13 @@ def test_seahorse_tokenizer(seahorse: SeahorseModel):
         DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?",
         DEFAULT_IMAGE_TOKEN + "\nWhere is the seahorse in the image?",  # more tokens
     ]
-    tokens = seahorse.tokenize_text(batch_queries)
+    tokens = seahorse.tokenize_text(batch_queries, pad_to_multiple_of=1)
     input_ids = tokens.input_ids
     assert input_ids.ndim == 2
     assert input_ids.shape[0] == 2
-    assert input_ids.shape[1] > len_a, "Second query has more tokens than the first one"
+    assert (
+        input_ids.shape[1] > len_a
+    ), f"Second query has more tokens than the first one. {input_ids}"
     assert (
         input_ids[0, 0].item() == seahorse.tokenizer.pad_token_id
     )  # First sequence should be left padded

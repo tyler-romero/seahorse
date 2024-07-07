@@ -1,8 +1,11 @@
 import torch
 from PIL.Image import Image as PILImage
 from torch import nn
+from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
+from transformers.models.auto.configuration_auto import AutoConfig
+from transformers.models.auto.modeling_auto import AutoModelForCausalLM
 from transformers.models.auto.tokenization_auto import AutoTokenizer
 from transformers.models.phi3 import Phi3ForCausalLM
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -12,13 +15,83 @@ from seahorse.config.configuration_seahorse import SeahorseConfig
 from seahorse.models.vision_encoder import LlavaVisionProjector, TimmEncoder
 
 # NOTE: Figure these out a bit better, see existing placeholder tokens
-IGNORE_INDEX = -100
+LABEL_IGNORE_INDEX = -100
 DEFAULT_PADDING_TOKEN = "<pad>"
 DEFAULT_IMAGE_TOKEN = "<image>"
 # https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/blob/main/added_tokens.json
 DEFAULT_IM_START_TOKEN = "<|placeholder1|>"
 DEFAULT_IM_END_TOKEN = "<|placeholder2|>"
 IMAGE_NEWLINE_TOKEN = "<|placeholder3|>"
+
+
+def load_unsloth_model(model_name, revision):
+    # Unsloth makes a bunch of assumptions that make it less flexible
+    # For example, MistralForCausalLM_fast_forward requires input_ids,
+    # rather than inputs_embeds...
+    config = AutoConfig.from_pretrained(model_name, revision=revision)
+    if config.model_type != "mistral":
+        raise ValueError(
+            "Unsloth's implementation of Phi3 is should be based on their FastMistralModel"
+        )
+
+    from unsloth import FastMistralModel
+    from unsloth.models.llama import original_apply_o, original_apply_qkv
+
+    # See unsloth/models/llama.py::from_pretrained
+    FastMistralModel.pre_patch()
+    model = AutoModelForCausalLM.from_pretrained(
+        pretrained_model_name_or_path=model_name,
+        device_map="cuda",
+        torch_dtype=torch.bfloat16,
+        max_position_embeddings=config.max_position_embeddings,
+        trust_remote_code=False,
+        revision=revision,
+    )
+    model = FastMistralModel.post_patch(model)
+
+    # WTF is this...
+    for idx, layer in enumerate(model.model.layers):
+        layer.self_attn.apply_qkv = original_apply_qkv
+        layer.self_attn.apply_o = original_apply_o
+    return model
+
+
+def load_tokenizer(model_name: str, revision: str | None = None):
+    tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
+    return tokenizer
+
+
+class ImagePositionalEmbeddingForEach(nn.Module):
+    """Every image patch has its own positional embedding."""
+
+    def __init__(self, num_patches_x, num_patches_y, embedding_dim) -> None:
+        super().__init__()
+        self.image_patch_pos = nn.Parameter(
+            torch.zeros(1, num_patches_x, num_patches_y, embedding_dim)
+        )
+        nn.init.normal_(self.image_patch_pos, std=0.02)
+
+    def forward(self, image_patch_embeddings: torch.Tensor) -> torch.Tensor:
+        return image_patch_embeddings + self.image_patch_pos
+
+
+class ImagePositionalEmbeddingXY(nn.Module):
+    """Positional embeddings for image patches in X and Y directions."""
+
+    def __init__(self, num_patches_x, num_patches_y, embedding_dim) -> None:
+        super().__init__()
+        self.num_patches_x = num_patches_x
+        self.num_patches_y = num_patches_y
+        self.image_patch_pos_x = nn.Parameter(torch.zeros(1, num_patches_x, 1, embedding_dim))
+        self.image_patch_pos_y = nn.Parameter(torch.zeros(1, 1, num_patches_y, embedding_dim))
+        nn.init.normal_(self.image_patch_pos_x, std=0.02)
+        nn.init.normal_(self.image_patch_pos_y, std=0.02)
+
+    def forward(self, image_patch_embeddings: torch.Tensor) -> torch.Tensor:
+        batch_size = image_patch_embeddings.shape[0]
+        pos_x = self.image_patch_pos_x.expand(batch_size, -1, self.num_patches_y, -1)
+        pos_y = self.image_patch_pos_y.expand(batch_size, self.num_patches_x, -1, -1)
+        return image_patch_embeddings + pos_x + pos_y
 
 
 class SeahorseModel(PreTrainedModel):
@@ -37,19 +110,45 @@ class SeahorseModel(PreTrainedModel):
         super().__init__(self.config)
 
         self.vision_encoder = TimmEncoder(timm_model=self.config.vision_encoder)
-        self.language_model: Phi3ForCausalLM = Phi3ForCausalLM.from_pretrained(  # type: ignore
-            self.config.language_model,
-            device_map="cuda",  # TODO: make this configurable
-            torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",  # pip install flash_attn
-            revision=self.config.lm_revision,
-        )
+        is_unsloth = self.config.language_model.startswith("unsloth/")
+        if is_unsloth:
+            print("Loading unsloth model")
+            self.language_model = load_unsloth_model(
+                self.config.language_model, self.config.lm_revision
+            )
+        else:
+            self.language_model: Phi3ForCausalLM = Phi3ForCausalLM.from_pretrained(  # type: ignore
+                self.config.language_model,
+                device_map="cuda",  # TODO: make this configurable
+                torch_dtype=torch.bfloat16,
+                attn_implementation="flash_attention_2",  # pip install flash_attn
+                revision=self.config.lm_revision,
+                use_safetensors=True,
+            )
+
+        embedding_dim = self.language_model.get_input_embeddings().embedding_dim  # type: ignore
         self.vision_projector = LlavaVisionProjector(
-            mm_hidden_size=self.vision_encoder.timm_model.num_features,
-            hidden_size=self.language_model.get_input_embeddings().embedding_dim,  # type: ignore
+            mm_hidden_size=self.vision_encoder.timm_model.num_features, hidden_size=embedding_dim
         )
 
-        self.tokenizer = self.setup_tokenizer_for_vision(self.config.language_model)
+        self.img_pos_embed = None
+        if self.config.with_image_patch_positional_embeddings == "xy":
+            self.img_pos_embed = ImagePositionalEmbeddingXY(
+                num_patches_x=self.vision_encoder.num_patches_x,
+                num_patches_y=self.vision_encoder.num_patches_y,
+                embedding_dim=embedding_dim,
+            )
+        elif self.config.with_image_patch_positional_embeddings == "each":
+            self.img_pos_embed = ImagePositionalEmbeddingForEach(
+                num_patches_x=self.vision_encoder.num_patches_x,
+                num_patches_y=self.vision_encoder.num_patches_y,
+                embedding_dim=embedding_dim,
+            )
+
+        tokenizer = AutoTokenizer.from_pretrained(
+            self.config.language_model, revision=self.config.lm_revision
+        )
+        self.tokenizer = self.setup_tokenizer_for_vision(tokenizer)
         self.image_token_id = self.tokenizer.convert_tokens_to_ids(DEFAULT_IMAGE_TOKEN)
         print(f"Image token ID: {self.image_token_id}")
 
@@ -72,32 +171,22 @@ class SeahorseModel(PreTrainedModel):
         for param in self.vision_projector.parameters():
             param.requires_grad = True
 
-    def setup_tokenizer_for_vision(self, model_name: str) -> PreTrainedTokenizer:
-        # Phi3 tokenizer is identicle to LlamaTokenizer, except for some added tokens
-        # https://huggingface.co/docs/transformers/main/en/model_doc/llama#transformers.LlamaTokenizer
-        tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            pad_token=DEFAULT_PADDING_TOKEN,  # LlamaTokenizer doesn't have a pad token by default
-        )
-
+    def setup_tokenizer_for_vision(self, tokenizer: PreTrainedTokenizer) -> PreTrainedTokenizer:
         # https://github.com/haotian-liu/LLaVA/blob/main/llava/model/llava_arch.py#L326
-        num_new_tokens = 0
-        num_new_tokens += tokenizer.add_tokens([DEFAULT_IMAGE_TOKEN], special_tokens=True)
-        # num_new_tokens += tokenizer.add_tokens([DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN])
+        if tokenizer.pad_token is None:
+            print("WARNING: Adding a padding token to the tokenizer")
+            tokenizer.add_special_tokens({"pad_token": DEFAULT_PADDING_TOKEN})
 
-        # if num_new_tokens > 0:
-        #     input_embeddings = self.get_input_embeddings().weight.data
-        #     # Init new embeddings as the average of the existing embeddings
-        #     input_embeddings_avg = input_embeddings[:-num_new_tokens].mean(dim=0, keepdim=True)
-        #     input_embeddings[-num_new_tokens:] = input_embeddings_avg
+        tokenizer.add_tokens([DEFAULT_IMAGE_TOKEN], special_tokens=True)
         return tokenizer
 
-    def tokenize_text(self, text: str | list[str]) -> "BatchEncoding":
+    def tokenize_text(self, text: str | list[str], pad_to_multiple_of: int = 8) -> "BatchEncoding":
         tokens = self.tokenizer(
             text,
             return_tensors="pt",
             padding="longest",
             max_length=self.tokenizer.model_max_length,
+            pad_to_multiple_of=pad_to_multiple_of,
             truncation=True,
         )
         images_per_ex = (tokens.input_ids == self.image_token_id).sum(dim=-1)
@@ -137,11 +226,15 @@ class SeahorseModel(PreTrainedModel):
 
     def merge_text_and_image_tokens(
         self,
-        text_token_ids: torch.LongTensor,
-        image_patch_embeds: torch.Tensor | None = None,
+        input_ids: torch.LongTensor,
+        text_embeds: torch.Tensor,
+        image_patch_embeds: torch.Tensor,
         attention_mask: torch.LongTensor | None = None,
         text_labels: torch.LongTensor | None = None,
-    ) -> tuple[torch.Tensor, torch.LongTensor | None, torch.LongTensor | None]:
+        position_ids: torch.LongTensor | None = None,
+    ) -> tuple[
+        torch.Tensor, torch.LongTensor | None, torch.LongTensor | None, torch.LongTensor | None
+    ]:
         """
         Merge text and image tokens into a single tensor for input to the language model.
         The image token in each sequence is replaced with the image patch embeddings.
@@ -149,7 +242,8 @@ class SeahorseModel(PreTrainedModel):
         with no image tokens are also supported. But mixed batches are not allowed.
 
         Args:
-            text_token_ids (torch.LongTensor): Tokenized text input (BS, SQ_LEN)
+            input_ids (torch.LongTensor): Tokenized text input (BS, SQ_LEN)
+            text_embeds (torch.Tensor): Text embeddings (BS, SQ_LEN, EMBED_DIM)
             text_labels (torch.LongTensor): Text token labels, if any (BS, SQ_LEN)
             image_patch_embeds (torch.Tensor | None): Image patch embeddings, if any (BS, T_x, T_y, EMBED_DIM)
 
@@ -157,14 +251,14 @@ class SeahorseModel(PreTrainedModel):
             torch.Tensor: Merged embeddings for input to the language model (BS, SQ_LEN, EMBED_DIM)
             torch.LongTensor | None: Attention mask for the merged embeddings, if any (BS, SQ_LEN)
             torch.LongTensor | None: Merged labels for the language model, if any (BS, SQ_LEN)
+            torch.LongTensor | None: Merged position_ids for the language model, if any (BS, SQ_LEN)
         """
         # Inspired by moondream
-        text_emb = self.language_model.get_input_embeddings()
-        bs, sl = text_token_ids.shape
-        image_mask_orig_seq = text_token_ids == self.image_token_id
+        bs, sl = input_ids.shape
+        image_mask_orig_seq = input_ids == self.image_token_id
 
         if image_mask_orig_seq.sum() == 0:  # no image tokens in any sequence
-            return text_emb(text_token_ids), attention_mask, text_labels
+            return text_embeds, attention_mask, text_labels, position_ids
         elif (image_mask_orig_seq.sum(dim=-1) != 1).any():
             raise ValueError(
                 f"Multiple image tokens found in a single example. {image_mask_orig_seq=}"
@@ -175,6 +269,8 @@ class SeahorseModel(PreTrainedModel):
             raise ValueError(
                 f"Number of images provided does not match batch size: {bs=} != {image_patch_embeds.shape[0]}"
             )
+        elif position_ids is not None:
+            raise ValueError("position_ids is not (yet) supported by SeahorseModel")
 
         _, tile_x, tile_y, chan = image_patch_embeds.shape
         img_seq_len = tile_x * tile_y
@@ -185,10 +281,10 @@ class SeahorseModel(PreTrainedModel):
 
         # Create indices for text embeddings, excluding the image token
         text_indices_orig_seq = torch.arange(sl, device=self.device).unsqueeze(0).expand(bs, -1)
-        text_mask_orig_seq = text_token_ids != self.image_token_id  # TODO
+        text_mask_orig_seq = input_ids != self.image_token_id  # TODO
         text_indices_orig_seq = text_indices_orig_seq[text_mask_orig_seq].view(bs, -1)
 
-        text_embeds = text_emb(text_token_ids[text_mask_orig_seq]).view(bs, -1, chan)
+        text_embeds = text_embeds[text_mask_orig_seq]  # drop image token "embeddings"
 
         # Calculate new positions for text tokens
         text_indices_new_seq = text_indices_orig_seq + (  # (BS, SL)
@@ -234,14 +330,19 @@ class SeahorseModel(PreTrainedModel):
         if text_labels is not None:
             text_labels_new_seq = torch.full(
                 (bs, new_seq_len),
-                fill_value=IGNORE_INDEX,  # Splice in -100s for the image positions in order to ignore them
+                fill_value=LABEL_IGNORE_INDEX,  # Ignore image positions for loss calculation
                 device=self.device,
                 dtype=text_labels.dtype,
             )  # (BS, SL + ISL - 1)
             text_labels_new_seq.scatter_(
                 1, text_indices_new_seq, text_labels[text_mask_orig_seq].view(bs, -1)
             )
-        return output_embeds, attention_mask_new_seq, text_labels_new_seq
+
+        # Add our own position_ids
+        position_ids_new_seq = (attention_mask_new_seq.cumsum(-1) - 1).masked_fill_(
+            (attention_mask_new_seq == 0), 1
+        )
+        return output_embeds, attention_mask_new_seq, text_labels_new_seq, position_ids_new_seq
 
     def forward(
         self,
@@ -257,26 +358,77 @@ class SeahorseModel(PreTrainedModel):
         output_hidden_states: bool | None = None,
         return_dict: bool | None = None,
     ) -> tuple | CausalLMOutputWithPast:
-        if position_ids is not None:
-            raise ValueError("position_ids is not (yet) supported by SeahorseModel")
         if inputs_embeds is not None:
-            raise ValueError("inputs_embeds is not supported by SeahorseModel")
-        if past_key_values is not None:
-            raise ValueError("past_key_values is not supported by SeahorseModel")
+            raise NotImplementedError("input_embeds is not yet supported")
 
-        projected_patch_embeddings = None
-        if pixel_values is not None:
-            projected_patch_embeddings = self.encode_and_project_image(pixel_values)
+        if inputs_embeds is None:
+            do_merge_text_and_image = pixel_values is not None and input_ids.shape[1] != 1
+            do_generate_with_cache = (
+                past_key_values is not None and pixel_values is not None and input_ids.shape[1] == 1
+            )
 
-        input_embeds, attention_mask, labels = self.merge_text_and_image_tokens(
-            text_token_ids=input_ids,
-            image_patch_embeds=projected_patch_embeddings,
-            attention_mask=attention_mask,
-            text_labels=labels,
-        )
+            # 1. Extract text embeddings
+            # Note that image_id has not been removed so need to add a dummy embed for it
+            inputs_embeds = self.get_input_embeddings()(input_ids)
+
+            # 2. Merge text and images
+            if do_merge_text_and_image:
+                if past_key_values is not None:
+                    raise ValueError(
+                        "past_key_values is not supported when pixel_values is provided"
+                    )
+                # a. Extract image embeddings
+                projected_patch_embeddings = self.encode_and_project_image(pixel_values)
+                if self.img_pos_embed is not None:
+                    projected_patch_embeddings = self.img_pos_embed(projected_patch_embeddings)
+
+                # b. Do the merge
+                inputs_embeds, attention_mask, labels, position_ids = (
+                    self.merge_text_and_image_tokens(  # type: ignore
+                        input_ids=input_ids,
+                        text_embeds=inputs_embeds,
+                        image_patch_embeds=projected_patch_embeddings,
+                        attention_mask=attention_mask,
+                        text_labels=labels,
+                    )
+                )
+
+            elif do_generate_with_cache:
+                raise NotImplementedError("Generating with cache is not yet supported")
+                # mask out hidden states that are not attended in the first layer
+                first_layer_past_key_value = past_key_values[0][0][:, :, :, 0]
+                batch_index, non_attended_tokens = torch.where(
+                    first_layer_past_key_value.float().sum(-2) == 0
+                )
+
+                # Get the target length
+                target_length = input_ids.shape[1]
+                past_length = first_layer_past_key_value.shape[-1]
+
+                extended_attention_mask = torch.ones(
+                    (attention_mask.shape[0], past_length),
+                    dtype=attention_mask.dtype,
+                    device=attention_mask.device,
+                )
+
+                # Filter out only the tokens that can be un-attended, this can happen
+                # if one uses Llava + Fused modules where the cache on the
+                # first iteration is already big enough, or if one passes custom cache
+                valid_indices = non_attended_tokens < extended_attention_mask.size(-1)
+                new_batch_index = batch_index[valid_indices]
+                new_non_attended_tokens = non_attended_tokens[valid_indices]
+
+                # Zero-out the places where we don't need to attend
+                extended_attention_mask[new_batch_index, new_non_attended_tokens] = 0
+
+                attention_mask = torch.cat(
+                    (extended_attention_mask, attention_mask[:, -target_length:]), dim=1
+                )
+                position_ids = torch.sum(attention_mask, dim=1).unsqueeze(-1) - 1
+
         return self.language_model(
             input_ids=None,  # we already have the text embeddings
-            inputs_embeds=input_embeds,
+            inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
@@ -286,3 +438,66 @@ class SeahorseModel(PreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+
+    def prepare_inputs_for_generation(
+        self,
+        input_ids,
+        past_key_values=None,
+        attention_mask=None,
+        inputs_embeds=None,
+        pixel_values=None,
+        **kwargs,
+    ):
+        if past_key_values is not None:
+            if isinstance(past_key_values, Cache):
+                cache_length = past_key_values.get_seq_length()
+                past_length = past_key_values.seen_tokens
+                max_cache_length = past_key_values.get_max_length()
+            else:
+                cache_length = past_length = past_key_values[0][0].shape[2]
+                max_cache_length = None
+
+            # Keep only the unprocessed tokens:
+            # 1 - If the length of the attention_mask exceeds the length of input_ids, then we are in a setting where
+            # some of the inputs are exclusively passed as part of the cache (e.g. when passing input_embeds as
+            # input)
+            if attention_mask is not None and attention_mask.shape[1] > input_ids.shape[1]:
+                input_ids = input_ids[:, -(attention_mask.shape[1] - past_length) :]
+            # 2 - If the past_length is smaller than input_ids', then input_ids holds all input tokens. We can discard
+            # input_ids based on the past_length.
+            elif past_length < input_ids.shape[1]:
+                input_ids = input_ids[:, past_length:]
+            # 3 - Otherwise (past_length >= input_ids.shape[1]), let's assume input_ids only has unprocessed tokens.
+
+            # If we are about to go beyond the maximum cache length, we need to crop the input attention mask.
+            if (
+                max_cache_length is not None
+                and attention_mask is not None
+                and cache_length + input_ids.shape[1] > max_cache_length
+            ):
+                attention_mask = attention_mask[:, -max_cache_length:]
+
+        position_ids = kwargs.get("position_ids", None)
+        if attention_mask is not None and position_ids is None:
+            # create position_ids on the fly for batch generation
+            position_ids = attention_mask.long().cumsum(-1) - 1
+            position_ids.masked_fill_(attention_mask == 0, 1)
+            if past_key_values:
+                position_ids = position_ids[:, -input_ids.shape[1] :]
+
+        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
+        if inputs_embeds is not None and past_key_values is None:
+            model_inputs = {"inputs_embeds": inputs_embeds}
+        else:
+            model_inputs = {"input_ids": input_ids}
+
+        model_inputs.update(
+            {
+                "position_ids": position_ids,
+                "past_key_values": past_key_values,
+                "use_cache": kwargs.get("use_cache"),
+                "attention_mask": attention_mask,
+                "pixel_values": pixel_values,
+            }
+        )
+        return model_inputs
