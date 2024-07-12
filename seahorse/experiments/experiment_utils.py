@@ -57,6 +57,3 @@ def mute_warnings():
         "ignore",
         ".*torch.utils.checkpoint: the use_reentrant parameter should be passed explicitly.*",
     )
-    warnings.filterwarnings(
-        "ignore", ".*None of the inputs have requires_grad=True. Gradients will be None.*"
-    )

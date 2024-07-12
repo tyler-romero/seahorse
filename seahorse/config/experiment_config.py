@@ -1,8 +1,10 @@
+from typing import Literal
 from peft.config import PeftConfig
 from peft.tuners.lora import LoraConfig
 from pydantic import BaseModel, Field
 
 from seahorse.config.configuration_seahorse import SeahorseConfig
+from seahorse.data.dataset_construction import DataConfig
 from seahorse.train.seahorse_trainer import SeahorseTrainingArguments
 
 
@@ -33,4 +35,5 @@ class ModelingConfig(BaseModel):
 class RunConfig(BaseModel):
     modeling_config: ModelingConfig
     training_arguments: SeahorseTrainingArguments
-    # TODO: data_arguments: SeahorseDataArguments
+    data_config: DataConfig
+    job_type: Literal["training", "pretrain", "instr-tune"] = "training"

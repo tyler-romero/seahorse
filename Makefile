@@ -29,4 +29,5 @@ install:  ## Install seahorse dependencies
 TEST_ARGS =
 
 test: ## Run tests (may require a GPU)
-	CUDA_LAUNCH_BLOCKING=1 pytest --tb=native --show-capture=stdout --log-cli-level DEBUG ${TEST_ARGS}
+	CUDA_LAUNCH_BLOCKING=1 pytest --tb=native --show-capture=stdout \
+		--log-cli-level DEBUG --durations=10 ${TEST_ARGS}

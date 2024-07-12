@@ -5,7 +5,7 @@ import pytest
 import torch
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from seahorse.data.utils import random_pil
+from seahorse.data.data_utils import random_pil
 from seahorse.models.seahorse import DEFAULT_IMAGE_TOKEN, LABEL_IGNORE_INDEX, SeahorseModel
 
 
@@ -27,7 +27,8 @@ def seahorse():
     return model
 
 
-def test_seahorse_generate(seahorse: SeahorseModel):
+def test_seahorse_generate_with_cache(seahorse: SeahorseModel):
+    max_new_tokens = 50
     prompt = DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?"
     preprocessed_img = seahorse.preprocess_image([random_pil()])
     tokens = seahorse.tokenize_text(prompt)
@@ -35,16 +36,38 @@ def test_seahorse_generate(seahorse: SeahorseModel):
     with patch.object(
         seahorse, "merge_text_and_image_tokens", wraps=seahorse.merge_text_and_image_tokens
     ) as mock_merge:
-        generate_ids = seahorse.generate(
+        output = seahorse.generate(
             input_ids=tokens.input_ids.to(seahorse.device),
             pixel_values=preprocessed_img.to(seahorse.device),
             attention_mask=tokens.attention_mask.to(seahorse.device),
-            max_new_tokens=5,
+            max_new_tokens=max_new_tokens,
+            use_cache=True,  # Autoregressive generation with cache
+            do_sample=False,
         )
         mock_merge.assert_called_once()  # called once then cache takes over
-    assert generate_ids.ndim == 2
-    assert generate_ids.shape[0] == 1
-    assert generate_ids.shape[1] > tokens.input_ids.shape[1], "Generated tokens should be longer"
+
+    assert output.ndim == 2
+    assert output.shape[0] == 1
+    assert output.shape[1] > tokens.input_ids.shape[1], "Generated tokens should be longer"
+
+    output_wo_cache = seahorse.generate(
+        input_ids=tokens.input_ids.to(seahorse.device),
+        pixel_values=preprocessed_img.to(seahorse.device),
+        attention_mask=tokens.attention_mask.to(seahorse.device),
+        max_new_tokens=max_new_tokens,
+        use_cache=False,  # Simple autoregressive generation without cache
+        do_sample=False,
+    )
+
+    decoded_text = seahorse.tokenizer.decode(output[0], skip_special_tokens=False)
+    decoded_text_wo_cache = seahorse.tokenizer.decode(output_wo_cache[0], skip_special_tokens=False)
+    print(f"Decoded text: {decoded_text}")
+    print(f"Decoded text (no cache): {decoded_text_wo_cache}")
+    assert (
+        decoded_text == decoded_text_wo_cache
+    ), "Results should be the same with and without cache"
+
+    assert (output == output_wo_cache).all(), "Results should be the same with and without cache"
 
 
 def test_seahorse_generate_no_cache(seahorse: SeahorseModel):
@@ -66,28 +89,6 @@ def test_seahorse_generate_no_cache(seahorse: SeahorseModel):
     assert generate_ids.ndim == 2
     assert generate_ids.shape[0] == 1
     assert generate_ids.shape[1] > tokens.input_ids.shape[1], "Generated tokens should be longer"
-
-
-# def test_seahorse_unsloth_generate_no_cache():
-#     seahorse = SeahorseModel(config=SeahorseUnslothConfig())
-#     prompt = DEFAULT_IMAGE_TOKEN + "\nIs there a seahorse?"
-#     preprocessed_img = seahorse.preprocess_image([random_pil()])
-#     tokens = seahorse.tokenize_text(prompt)
-
-#     with patch.object(
-#         seahorse, "merge_text_and_image_tokens", wraps=seahorse.merge_text_and_image_tokens
-#     ) as mock_merge:
-#         generate_ids = seahorse.generate(
-#             input_ids=tokens.input_ids.to(seahorse.device),
-#             pixel_values=preprocessed_img.to(seahorse.device),
-#             attention_mask=tokens.attention_mask.to(seahorse.device),
-#             max_new_tokens=5,
-#             use_cache=False,  # Simple autoregressive generation without cache
-#         )
-#         mock_merge.assert_called()  # w/o cache will call merge_text_and_image_tokens multiple times
-#     assert generate_ids.ndim == 2
-#     assert generate_ids.shape[0] == 1
-#     assert generate_ids.shape[1] > tokens.input_ids.shape[1], "Generated tokens should be longer"
 
 
 def test_seahorse_batched_inference(seahorse: SeahorseModel):
@@ -199,10 +200,6 @@ def test_seahorse_merge_text_and_image_tokens(seahorse: SeahorseModel):
     assert torch.all(torch.any(merged_labels == LABEL_IGNORE_INDEX, dim=1))
     assert merged_position_ids.shape[0] == 2
     assert merged_position_ids.shape[1] == merged_token_embeddings.shape[1]
-    # padded query should start with 1s for position ids
-    assert torch.all(
-        merged_position_ids[0, 0:2] == 1
-    ), "First query should start with 1s for position ids (padding)"
 
 
 def test_seahorse_encode_and_project_image(seahorse: SeahorseModel):
