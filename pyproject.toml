@@ -18,15 +18,14 @@ matplotlib = "^3.8.4"
 numpy = "^1.26.4"
 python = "~3.11"
 flash-attn = {url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.5.9.post1/flash_attn-2.5.9.post1+cu122torch2.3cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"}
-unsloth = { git = "https://github.com/unslothai/unsloth.git", rev = "9b4cc934efec66abd0a77df011779b393a99c026", extras = ["cu121-ampere-torch230"] }
 bitsandbytes = "^0.43.1"
-xformers = "^0.0.26.post1"
 devtools = "^0.12.2"
-trl = "^0.9.4"
 wandb = "^0.17.4"
+pandas = "^2.2.2"
+optuna = "^3.6.1"
 
 [tool.poetry.group.dev.dependencies]
-ipython = "^8.7.0"
+notebook = "^7.2.1"
 pytest = "^7.4.3"
 
 [tool.poetry.group.pytorch.dependencies]

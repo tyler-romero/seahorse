@@ -1,10 +1,12 @@
+import logging
+
 import torch
 from PIL.Image import Image as PILImage
 from torch import nn
-from transformers.cache_utils import Cache, DynamicCache
+from transformers.cache_utils import Cache
+from transformers.generation import GenerationConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
-from transformers.models.auto.configuration_auto import AutoConfig
 from transformers.models.auto.modeling_auto import AutoModelForCausalLM
 from transformers.models.auto.tokenization_auto import AutoTokenizer
 from transformers.models.phi3 import Phi3ForCausalLM
@@ -14,51 +16,13 @@ from transformers.tokenization_utils_base import BatchEncoding
 from seahorse.config.configuration_seahorse import SeahorseConfig
 from seahorse.models.vision_encoder import LlavaVisionProjector, TimmEncoder
 
+logger = logging.getLogger(__name__)
+
 # NOTE: Figure these out a bit better, see existing placeholder tokens
 LABEL_IGNORE_INDEX = -100
 DEFAULT_PADDING_TOKEN = "<pad>"
 DEFAULT_IMAGE_TOKEN = "<image>"
 # https://huggingface.co/microsoft/Phi-3-mini-128k-instruct/blob/main/added_tokens.json
-DEFAULT_IM_START_TOKEN = "<|placeholder1|>"
-DEFAULT_IM_END_TOKEN = "<|placeholder2|>"
-IMAGE_NEWLINE_TOKEN = "<|placeholder3|>"
-
-
-def load_unsloth_model(model_name, revision):
-    # Unsloth makes a bunch of assumptions that make it less flexible
-    # For example, MistralForCausalLM_fast_forward requires input_ids,
-    # rather than inputs_embeds...
-    config = AutoConfig.from_pretrained(model_name, revision=revision)
-    if config.model_type != "mistral":
-        raise ValueError(
-            "Unsloth's implementation of Phi3 is should be based on their FastMistralModel"
-        )
-
-    from unsloth import FastMistralModel
-    from unsloth.models.llama import original_apply_o, original_apply_qkv
-
-    # See unsloth/models/llama.py::from_pretrained
-    FastMistralModel.pre_patch()
-    model = AutoModelForCausalLM.from_pretrained(
-        pretrained_model_name_or_path=model_name,
-        device_map="cuda",
-        torch_dtype=torch.bfloat16,
-        max_position_embeddings=config.max_position_embeddings,
-        trust_remote_code=False,
-        revision=revision,
-    )
-    model = FastMistralModel.post_patch(model)
-
-    # WTF is this...
-    for idx, layer in enumerate(model.model.layers):
-        layer.self_attn.apply_qkv = original_apply_qkv
-        layer.self_attn.apply_o = original_apply_o
-    return model
-
-
-def load_tokenizer(model_name: str, revision: str | None = None):
-    tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
-    return tokenizer
 
 
 class ImagePositionalEmbeddingForEach(nn.Module):
@@ -95,12 +59,14 @@ class ImagePositionalEmbeddingXY(nn.Module):
 
 
 class SeahorseModel(PreTrainedModel):
+    config_class = SeahorseConfig
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["Phi3DecoderLayer"]
     _skip_keys_device_placement = "past_key_values"
     _supports_flash_attn_2 = True
     _supports_sdpa = False
+    _supports_cache_class = True
 
     def __init__(
         self,
@@ -110,21 +76,15 @@ class SeahorseModel(PreTrainedModel):
         super().__init__(self.config)
 
         self.vision_encoder = TimmEncoder(timm_model=self.config.vision_encoder)
-        is_unsloth = self.config.language_model.startswith("unsloth/")
-        if is_unsloth:
-            print("Loading unsloth model")
-            self.language_model = load_unsloth_model(
-                self.config.language_model, self.config.lm_revision
-            )
-        else:
-            self.language_model: Phi3ForCausalLM = Phi3ForCausalLM.from_pretrained(  # type: ignore
-                self.config.language_model,
-                device_map="cuda",  # TODO: make this configurable
-                torch_dtype=torch.bfloat16,
-                attn_implementation="flash_attention_2",  # pip install flash_attn
-                revision=self.config.lm_revision,
-                use_safetensors=True,
-            )
+        self.language_model: Phi3ForCausalLM = AutoModelForCausalLM.from_pretrained(  # type: ignore
+            self.config.language_model,
+            device_map="cuda",  # TODO: make this configurable
+            torch_dtype=torch.bfloat16,
+            attn_implementation="flash_attention_2",  # pip install flash_attn
+            revision=self.config.lm_revision,
+            use_safetensors=True,
+            trust_remote_code=True,  #  until new phi changes are checked in
+        )
 
         embedding_dim = self.language_model.get_input_embeddings().embedding_dim  # type: ignore
         self.vision_projector = LlavaVisionProjector(
@@ -145,12 +105,20 @@ class SeahorseModel(PreTrainedModel):
                 embedding_dim=embedding_dim,
             )
 
-        tokenizer = AutoTokenizer.from_pretrained(
-            self.config.language_model, revision=self.config.lm_revision
+        self.tokenizer: PreTrainedTokenizer = self.setup_tokenizer_for_vision(
+            AutoTokenizer.from_pretrained(  # type: ignore
+                self.config.language_model, revision=self.config.lm_revision
+            )
         )
-        self.tokenizer = self.setup_tokenizer_for_vision(tokenizer)
-        self.image_token_id = self.tokenizer.convert_tokens_to_ids(DEFAULT_IMAGE_TOKEN)
-        print(f"Image token ID: {self.image_token_id}")
+        self.generation_config = GenerationConfig(
+            bos_token_id=self.tokenizer.bos_token_id,
+            eos_token_id=[
+                32000,
+                32001,
+                32007,
+            ],  # phi3 specific: <|endoftext|>, <|assistant|>, <|end|>
+            pad_token_id=self.tokenizer.pad_token_id,
+        )
 
         self._specify_trainable_params()
 
@@ -159,40 +127,75 @@ class SeahorseModel(PreTrainedModel):
         for param in self.vision_encoder.parameters():
             param.requires_grad = False
 
-        # Freeze the language model except for the embedding table and the lm_head
-        # Note: without lm_head requiring a grad, torch.compile doesn't work
+        # Freeze the language model...
         for name, param in self.language_model.named_parameters():
-            if "embed_tokens" not in name and "lm_head" not in name:
-                param.requires_grad = False
-        self.language_model.get_input_embeddings().requires_grad = True  # type: ignore
-        self.language_model.get_output_embeddings().requires_grad = True  # type: ignore
+            param.requires_grad = False
+
+        # ...except for the embedding table and the lm_head
+        # Note: without lm_head requiring a grad, torch.compile doesn't work
+        if not self.config.freeze_lm_input_output:
+            for name, param in self.language_model.named_parameters():
+                if "embed_tokens" in name or "lm_head" in name:
+                    param.requires_grad = True
+            self.language_model.get_input_embeddings().requires_grad = True  # type: ignore
+            self.language_model.get_output_embeddings().requires_grad = True  # type: ignore
 
         # Make sure the vision projector is trainable
         for param in self.vision_projector.parameters():
             param.requires_grad = True
 
+        # And the image positional embeddings
+        if self.img_pos_embed is not None:
+            for param in self.img_pos_embed.parameters():
+                param.requires_grad = True
+
     def setup_tokenizer_for_vision(self, tokenizer: PreTrainedTokenizer) -> PreTrainedTokenizer:
-        # https://github.com/haotian-liu/LLaVA/blob/main/llava/model/llava_arch.py#L326
-        if tokenizer.pad_token is None:
-            print("WARNING: Adding a padding token to the tokenizer")
-            tokenizer.add_special_tokens({"pad_token": DEFAULT_PADDING_TOKEN})
+        self.tokenizer = tokenizer
+        # use unk rather than eos token to prevent endless generation
+        # see https://huggingface.co/microsoft/Phi-3-mini-4k-instruct/blob/main/sample_finetune.py
+        # overwrite the default pad token to prevent endless generation
+        self.tokenizer.add_tokens([DEFAULT_PADDING_TOKEN], special_tokens=True)
+        self.tokenizer.pad_token = DEFAULT_PADDING_TOKEN
+        print(f"Pad token ID: {tokenizer.pad_token_id}")
+        self.tokenizer.add_tokens([DEFAULT_IMAGE_TOKEN], special_tokens=True)
+        self.image_token_id = self.tokenizer.convert_tokens_to_ids(DEFAULT_IMAGE_TOKEN)
+        print(f"Image token ID: {self.image_token_id}")
+        self.eos_token_id = self.tokenizer.eos_token_id
+        print(f"EOS token ID: {self.eos_token_id}")
+        return self.tokenizer
 
-        tokenizer.add_tokens([DEFAULT_IMAGE_TOKEN], special_tokens=True)
-        return tokenizer
-
-    def tokenize_text(self, text: str | list[str], pad_to_multiple_of: int = 8) -> "BatchEncoding":
+    def tokenize_text(
+        self, text: str | list[str], pad_to_multiple_of: int | None = None
+    ) -> "BatchEncoding":
         tokens = self.tokenizer(
             text,
-            return_tensors="pt",
             padding="longest",
+            truncation=True,
             max_length=self.tokenizer.model_max_length,
             pad_to_multiple_of=pad_to_multiple_of,
-            truncation=True,
+            return_tensors="pt",
         )
         images_per_ex = (tokens.input_ids == self.image_token_id).sum(dim=-1)
         if (images_per_ex > 1).any():
             raise ValueError("Multiple image tokens found in a single example")
         return tokens
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]] | list[list[dict[str, str]]],
+        tokenize: bool = True,
+        pad_to_multiple_of: int | None = None,
+    ) -> "BatchEncoding":
+        return self.tokenizer.apply_chat_template(  # type: ignore
+            messages,
+            tokenize=tokenize,
+            add_generation_prompt=False,  # doesnt do anything for Phi3
+            padding=True,  # pads to longest length
+            truncation=True,
+            max_length=self.tokenizer.model_max_length,  # TODO: truncation w/ image tokens
+            pad_to_multiple_of=pad_to_multiple_of,
+            return_tensors="pt",
+        )
 
     def get_input_embeddings(self) -> nn.Module:
         return self.language_model.get_input_embeddings()
@@ -258,6 +261,9 @@ class SeahorseModel(PreTrainedModel):
         image_mask_orig_seq = input_ids == self.image_token_id
 
         if image_mask_orig_seq.sum() == 0:  # no image tokens in any sequence
+            if image_patch_embeds is not None:
+                logger.warning("Images were provided, but no image tokens were found.")
+            # TODO: pad_to_multiple_of for the easy case
             return text_embeds, attention_mask, text_labels, position_ids
         elif (image_mask_orig_seq.sum(dim=-1) != 1).any():
             raise ValueError(
@@ -342,7 +348,12 @@ class SeahorseModel(PreTrainedModel):
         position_ids_new_seq = (attention_mask_new_seq.cumsum(-1) - 1).masked_fill_(
             (attention_mask_new_seq == 0), 1
         )
-        return output_embeds, attention_mask_new_seq, text_labels_new_seq, position_ids_new_seq
+        return (
+            output_embeds,
+            attention_mask_new_seq,  # type: ignore
+            text_labels_new_seq,
+            position_ids_new_seq,
+        )
 
     def forward(
         self,
@@ -350,13 +361,14 @@ class SeahorseModel(PreTrainedModel):
         pixel_values: torch.FloatTensor | PILImage | None = None,
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.LongTensor | None = None,
-        past_key_values: list[torch.FloatTensor] | None = None,
+        past_key_values: Cache | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
         labels: torch.LongTensor | None = None,  # (BS, SQ_LEN)
         use_cache: bool | None = None,
         output_attentions: bool | None = None,
         output_hidden_states: bool | None = None,
         return_dict: bool | None = None,
+        cache_position: torch.LongTensor | None = None,
     ) -> tuple | CausalLMOutputWithPast:
         if inputs_embeds is not None:
             raise NotImplementedError("input_embeds is not yet supported")
@@ -373,10 +385,6 @@ class SeahorseModel(PreTrainedModel):
 
             # 2. Merge text and images
             if do_merge_text_and_image:
-                if past_key_values is not None:
-                    raise ValueError(
-                        "past_key_values is not supported when pixel_values is provided"
-                    )
                 # a. Extract image embeddings
                 projected_patch_embeddings = self.encode_and_project_image(pixel_values)
                 if self.img_pos_embed is not None:
@@ -394,7 +402,6 @@ class SeahorseModel(PreTrainedModel):
                 )
 
             elif do_generate_with_cache:
-                raise NotImplementedError("Generating with cache is not yet supported")
                 # mask out hidden states that are not attended in the first layer
                 first_layer_past_key_value = past_key_values[0][0][:, :, :, 0]
                 batch_index, non_attended_tokens = torch.where(
@@ -439,23 +446,36 @@ class SeahorseModel(PreTrainedModel):
             return_dict=return_dict,
         )
 
+    # Taken directly from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llava/modeling_llava.py#L517
     def prepare_inputs_for_generation(
         self,
         input_ids,
         past_key_values=None,
         attention_mask=None,
         inputs_embeds=None,
+        cache_position=None,
+        use_cache=True,
         pixel_values=None,
         **kwargs,
     ):
+        past_length = 0
         if past_key_values is not None:
-            if isinstance(past_key_values, Cache):
-                cache_length = past_key_values.get_seq_length()
-                past_length = past_key_values.seen_tokens
-                max_cache_length = past_key_values.get_max_length()
-            else:
-                cache_length = past_length = past_key_values[0][0].shape[2]
-                max_cache_length = None
+            # Past key values are always initialized with a `Cache` object -> no need for if-else anymore
+            past_length = (
+                cache_position[0]
+                if cache_position is not None
+                else past_key_values.get_seq_length()
+            )
+            max_cache_length = (
+                torch.tensor(past_key_values.get_max_length(), device=input_ids.device)
+                if past_key_values.get_max_length() is not None
+                else None
+            )
+            cache_length = (
+                past_length
+                if max_cache_length is None
+                else torch.min(max_cache_length, past_length)
+            )
 
             # Keep only the unprocessed tokens:
             # 1 - If the length of the attention_mask exceeds the length of input_ids, then we are in a setting where
@@ -468,6 +488,8 @@ class SeahorseModel(PreTrainedModel):
             elif past_length < input_ids.shape[1]:
                 input_ids = input_ids[:, past_length:]
             # 3 - Otherwise (past_length >= input_ids.shape[1]), let's assume input_ids only has unprocessed tokens.
+            elif self.image_token_id in input_ids:
+                input_ids = input_ids[:, input_ids.shape[1] - 1 :]
 
             # If we are about to go beyond the maximum cache length, we need to crop the input attention mask.
             if (
@@ -491,13 +513,25 @@ class SeahorseModel(PreTrainedModel):
         else:
             model_inputs = {"input_ids": input_ids}
 
+        input_length = position_ids.shape[-1] if position_ids is not None else input_ids.shape[-1]
+        if cache_position is None:
+            cache_position = torch.arange(
+                past_length, past_length + input_length, device=input_ids.device
+            )
+        elif use_cache:
+            cache_position = cache_position[-input_length:]
+
         model_inputs.update(
             {
                 "position_ids": position_ids,
                 "past_key_values": past_key_values,
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
+                "cache_position": cache_position,
                 "pixel_values": pixel_values,
             }
         )
         return model_inputs
+
+    def _reorder_cache(self, *args, **kwargs):
+        return self.language_model._reorder_cache(*args, **kwargs)

@@ -1,5 +1,9 @@
+from pathlib import Path
+
 import numpy as np
 from PIL import Image
+
+DATAOCEAN_PATH = Path("/home/tromero/workspace/dataocean")
 
 
 def random_pil(height: int = 480, width: int = 640, random_seed=None, mode="RGB") -> Image.Image:

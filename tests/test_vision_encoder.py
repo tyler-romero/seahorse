@@ -1,10 +1,12 @@
+import pytest
 import torch
 
-from seahorse.data.utils import random_pil
+from seahorse.data.data_utils import random_pil
 from seahorse.models.vision_encoder import TimmEncoder
 
 
-def test_timm_vision_encoder_with_clip():
+@pytest.mark.parametrize("output_layer", [-1, -2])
+def test_timm_vision_encoder_with_clip(output_layer: int):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = (
         torch.bfloat16
@@ -12,7 +14,9 @@ def test_timm_vision_encoder_with_clip():
         else torch.float32
     )
     timm_model = "vit_base_patch16_clip_224.openai"
-    timm_encoder = TimmEncoder(timm_model=timm_model).to(device, dtype)
+    timm_encoder = TimmEncoder(
+        timm_model=timm_model, output_layer=output_layer, do_compile=False
+    ).to(device, dtype)
 
     rand_img = random_pil()
 
@@ -28,7 +32,8 @@ def test_timm_vision_encoder_with_clip():
     assert timm_encoder.timm_model.num_features == 768
 
 
-def test_timm_vision_encoder_with_siglip():
+@pytest.mark.parametrize("output_layer", [-1, -2])
+def test_timm_vision_encoder_with_siglip(output_layer: int):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = (
         torch.bfloat16
@@ -36,7 +41,9 @@ def test_timm_vision_encoder_with_siglip():
         else torch.float32
     )
     timm_model = "vit_base_patch16_siglip_gap_224.webli"
-    timm_encoder = TimmEncoder(timm_model=timm_model).to(device, dtype)
+    timm_encoder = TimmEncoder(
+        timm_model=timm_model, output_layer=output_layer, do_compile=False
+    ).to(device, dtype)
 
     rand_img = random_pil()
 
@@ -59,7 +66,7 @@ def test_timm_vision_encoder_black_and_white_image():
         if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
         else torch.float32
     )
-    timm_encoder = TimmEncoder().to(device, dtype)
+    timm_encoder = TimmEncoder(do_compile=False).to(device, dtype)
 
     rand_img = random_pil(mode="L")  # black and white PIL image (1 channel)
 

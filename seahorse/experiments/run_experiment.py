@@ -7,7 +7,7 @@ from devtools import pprint
 
 from seahorse.config.experiment_config import RunConfig
 from seahorse.experiments import experiment_registry
-from seahorse.experiments.utils import print_gpu_memory_usage
+from seahorse.experiments.experiment_utils import print_gpu_memory_usage
 from seahorse.train.train import run_training
 
 
@@ -45,20 +45,24 @@ def main():
     if not hasattr(experiment_registry, args.name):
         raise ValueError(f"Experiment '{args.name}' not found in the registry")
 
-    experiment_func = getattr(experiment_registry, args.name)
-    run_configs: list[RunConfig] = list(experiment_func())
-
     print_gpu_memory_usage()
-    print(f"Running experiment '{args.name}' with {len(run_configs)} configurations")
 
-    for i, run_config in enumerate(run_configs):
-        print(f"--------- Running experiment {args.name} ({i + 1}/{len(run_configs)}) ----------")
+    print(f"Running experiment '{args.name}'")
+    experiment_func = getattr(experiment_registry, args.name)
+
+    for i, run_config in enumerate(experiment_func()):
+        if isinstance(run_config, tuple):
+            run_config, optuna_trial = run_config
+        else:
+            optuna_trial = None
+
+        print(f"--------- Running experiment {args.name} ({i + 1}) ----------")
         if not isinstance(run_config, RunConfig):
             raise TypeError(f"Experiment '{args.name}' did not return a RunConfig")
         pprint(run_config)
 
         try:
-            run_training(run_config)
+            run_training(run_config, optuna_trial=optuna_trial)
         except Exception as e:
             print(f"Error running experiment {args.name}: {e}")
             print("Continuing to the next experiment")

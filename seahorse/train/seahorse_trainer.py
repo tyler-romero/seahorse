@@ -40,18 +40,25 @@ class SeahorseTrainingArguments(TrainingArguments):
     # Eval-related arguments
     #
     eval_strategy: IntervalStrategy = IntervalStrategy.NO
-    per_device_eval_batch_size: int = 32
-    eval_accumulation_steps: int = 1
+    eval_steps: float | None = None
+    metric_for_best_model: str | None = None
+    greater_is_better: bool | None = None
+    per_device_eval_batch_size: int = 8
+    eval_accumulation_steps: int | None = 1
+    eval_on_start: bool = False
+    prediction_loss_only: bool = True  # b/c we use a custom callback for evaluation
 
     #
     # Tracking-related arguments
     #
     run_name: str = "default-change-me"
     output_dir: str = "./results/default-change-me"
-    save_strategy: str = "no"
+    save_strategy: str = IntervalStrategy.STEPS
+    save_steps: int = 10000
+    save_total_limit: int | None = 1
     report_to: str = "wandb"
     logging_dir: str = "./logs"
-    logging_steps: int = 10
+    logging_steps: int = 100
     include_num_input_tokens_seen: bool = True
 
     def __post_init__(self):
@@ -82,10 +89,7 @@ class SeahorseTrainer(Trainer):
         # Inspired by unsloth's implementation of `Trainer`
         # Separate the parameters of the model into two groups: one for the embeddings
         # and one for the rest of the model.
-        param_groups = {
-            "non_embeddings": {},
-            "embeddings": {},
-        }
+        param_groups = {"non_embeddings": {}, "embeddings": {}}
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
                 continue
@@ -166,6 +170,39 @@ class SeahorseTrainer(Trainer):
                 },
             ]
             self.optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
-            if hasattr(self.optimizer, "train"):
-                self.optimizer.train()  # schedulefree optimizer needs to be put in train mode
+            try:
+                self.optimizer.train()  # optimizers like schedulefree need to be put in train mode
+            except AttributeError:
+                pass
         return self.optimizer
+
+    def evaluate(self, *args, **kwargs) -> dict[str, float]:
+        """
+        Note that this also wraps the on_evalute method of the SeahorseEvalCallback
+        """
+        try:
+            self.optimizer.eval()  # schedulefree optimizer needs to be put in eval mode
+        except AttributeError:
+            pass
+
+        output = super().evaluate(*args, **kwargs)
+
+        try:
+            self.optimizer.train()  # return to train mode
+        except AttributeError:
+            pass
+        return output
+
+    def predict(self, *args, **kwargs) -> dict[str, float]:
+        try:
+            self.optimizer.eval()  # schedulefree optimizer needs to be put in eval mode
+        except AttributeError:
+            pass
+
+        output = super().evaluate(*args, **kwargs)
+
+        try:
+            self.optimizer.train()  # return to train mode
+        except AttributeError:
+            pass
+        return output
