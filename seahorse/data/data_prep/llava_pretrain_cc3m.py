@@ -24,13 +24,13 @@ def _ablate_image(example, how: str = "random"):
 
 
 def _make_messages(convo: list[dict]) -> list[dict[str, str]]:
-    assert len(convo) == 2, "Expected exactly 2 messages in the conversation"
     messages = {c["from"]: c["value"] for c in convo}
-    return [
-        # {"role": "system", "content": SYSTEM_PROMPT},  # needed?
-        {"role": "user", "content": messages["human"]},
-        {"role": "assistant", "content": messages["gpt"]},
-    ]
+    turns = []
+    # turns.append({"role": "system", "content": SYSTEM_PROMPT})
+    for turn, content in messages.items():
+        role = "user" if turn == "human" else "assistant"
+        turns.append({"role": role, "content": content})
+    return turns
 
 
 # NOTE: llava pretrain prompts already have <image> inserted

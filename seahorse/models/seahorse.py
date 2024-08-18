@@ -8,8 +8,6 @@ from transformers.generation import GenerationConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_utils import PreTrainedModel
 from transformers.models.auto.modeling_auto import AutoModelForCausalLM
-from transformers.models.auto.tokenization_auto import AutoTokenizer
-from transformers.models.phi3 import Phi3ForCausalLM
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.tokenization_utils_base import BatchEncoding
 
@@ -70,21 +68,17 @@ class SeahorseModel(PreTrainedModel):
 
     def __init__(
         self,
+        vision_encoder: TimmEncoder,
+        language_model: AutoModelForCausalLM,
+        tokenizer: PreTrainedTokenizer,
         config: SeahorseConfig | None = None,
     ):
         self.config = config or SeahorseConfig()
         super().__init__(self.config)
 
-        self.vision_encoder = TimmEncoder(timm_model=self.config.vision_encoder)
-        self.language_model: Phi3ForCausalLM = AutoModelForCausalLM.from_pretrained(  # type: ignore
-            self.config.language_model,
-            device_map="cuda",  # TODO: make this configurable
-            torch_dtype=torch.bfloat16,
-            attn_implementation="flash_attention_2",  # pip install flash_attn
-            revision=self.config.lm_revision,
-            use_safetensors=True,
-            trust_remote_code=True,  #  until new phi changes are checked in
-        )
+        self.vision_encoder = vision_encoder
+        self.language_model = language_model
+        self.tokenizer: PreTrainedTokenizer = self.setup_tokenizer_for_vision(tokenizer)
 
         embedding_dim = self.language_model.get_input_embeddings().embedding_dim  # type: ignore
         self.vision_projector = LlavaVisionProjector(
@@ -105,11 +99,6 @@ class SeahorseModel(PreTrainedModel):
                 embedding_dim=embedding_dim,
             )
 
-        self.tokenizer: PreTrainedTokenizer = self.setup_tokenizer_for_vision(
-            AutoTokenizer.from_pretrained(  # type: ignore
-                self.config.language_model, revision=self.config.lm_revision
-            )
-        )
         self.generation_config = GenerationConfig(
             bos_token_id=self.tokenizer.bos_token_id,
             eos_token_id=[
@@ -124,27 +113,36 @@ class SeahorseModel(PreTrainedModel):
 
     def _specify_trainable_params(self):
         # Freeze the vision encoder
+        logger.info("[Frozen 🥶] vision encoder")
         for param in self.vision_encoder.parameters():
             param.requires_grad = False
 
         # Freeze the language model...
+        logger.info("[Frozen 🥶] language model")
         for name, param in self.language_model.named_parameters():
             param.requires_grad = False
 
         # ...except for the embedding table and the lm_head
         # Note: without lm_head requiring a grad, torch.compile doesn't work
-        if not self.config.freeze_lm_input_output:
+        if not self.config.freeze_llm_input:
             for name, param in self.language_model.named_parameters():
-                if "embed_tokens" in name or "lm_head" in name:
+                if "embed_tokens" in name:
                     param.requires_grad = True
             self.language_model.get_input_embeddings().requires_grad = True  # type: ignore
+
+        if not self.config.freeze_llm_output:
+            for name, param in self.language_model.named_parameters():
+                if "lm_head" in name:
+                    param.requires_grad = True
             self.language_model.get_output_embeddings().requires_grad = True  # type: ignore
 
         # Make sure the vision projector is trainable
+        logger.info("[Trainable 🔥] projector")
         for param in self.vision_projector.parameters():
             param.requires_grad = True
 
         # And the image positional embeddings
+        logger.info("[Trainable 🔥] image positional embeddings")
         if self.img_pos_embed is not None:
             for param in self.img_pos_embed.parameters():
                 param.requires_grad = True
@@ -359,7 +357,7 @@ class SeahorseModel(PreTrainedModel):
         self,
         input_ids: torch.LongTensor,
         pixel_values: torch.FloatTensor | PILImage | None = None,
-        attention_mask: torch.Tensor | None = None,
+        attention_mask: torch.LongTensor | None = None,
         position_ids: torch.LongTensor | None = None,
         past_key_values: Cache | None = None,
         inputs_embeds: torch.FloatTensor | None = None,
@@ -381,7 +379,7 @@ class SeahorseModel(PreTrainedModel):
 
             # 1. Extract text embeddings
             # Note that image_id has not been removed so need to add a dummy embed for it
-            inputs_embeds = self.get_input_embeddings()(input_ids)
+            inputs_embeds: torch.Tensor = self.get_input_embeddings()(input_ids)
 
             # 2. Merge text and images
             if do_merge_text_and_image:

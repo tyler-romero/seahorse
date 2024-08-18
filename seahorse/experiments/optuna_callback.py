@@ -40,9 +40,10 @@ class OptunaCallback(TrainerCallback):
         metrics: dict[str, float],
         **kwargs,
     ):
-        print("Optuna step {self.eval_step}")
-
+        print(f"Optuna step {self.eval_step}")
         metric_to_check: str = args.metric_for_best_model
+        if not metric_to_check.startswith("eval_"):
+            metric_to_check = f"eval_{metric_to_check}"
         metric_value = metrics.get(metric_to_check)
 
         if metric_value is None:
