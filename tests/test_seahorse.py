@@ -1,30 +1,10 @@
-import time
 from unittest.mock import patch
 
-import pytest
 import torch
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from seahorse.data.data_utils import random_pil
 from seahorse.models.seahorse import DEFAULT_IMAGE_TOKEN, LABEL_IGNORE_INDEX, SeahorseModel
-
-
-@pytest.fixture(scope="module")
-def seahorse():
-    """
-    Returns a SeahorseModel instance, with the model loaded on the appropriate
-    device and dtype. This model is cached and reused across all tests in this module.
-    """
-    start = time.time()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = (
-        torch.bfloat16
-        if torch.cuda.is_available() and torch.cuda.is_bf16_supported()
-        else torch.float32
-    )
-    model = SeahorseModel(config=None).to(device=device, dtype=dtype)
-    print(f"SeahorseModel loaded in {time.time() - start:.2f}s on {device} with {dtype}")
-    return model
 
 
 def test_seahorse_generate_with_cache(seahorse: SeahorseModel):
@@ -134,17 +114,14 @@ def test_seahorse_inference(seahorse: SeahorseModel):
     tokens = seahorse.tokenize_text(prompt)
     preprocessed_img = seahorse.preprocess_image([random_pil()])
 
-    with patch.object(
-        seahorse, "merge_text_and_image_tokens", wraps=seahorse.merge_text_and_image_tokens
-    ) as mock_merge:
-        out: CausalLMOutputWithPast = seahorse(
-            input_ids=tokens.input_ids.to(seahorse.device),
-            pixel_values=preprocessed_img.to(seahorse.device),
-            attention_mask=tokens.attention_mask.to(seahorse.device),
-        )
-        mock_merge.assert_called_once()
+    out: CausalLMOutputWithPast = seahorse(
+        input_ids=tokens.input_ids.to(seahorse.device),
+        pixel_values=preprocessed_img.to(seahorse.device),
+        attention_mask=tokens.attention_mask.to(seahorse.device),
+    )
     assert isinstance(out, CausalLMOutputWithPast)
     assert out.logits.shape[0] == 1, "Batch size should be 1"
+    assert out.logits.shape[1] > tokens.input_ids.shape[1], "Generated tokens should be longer"
 
 
 def test_seahorse_merge_text_and_image_tokens(seahorse: SeahorseModel):

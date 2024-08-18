@@ -1,23 +1,31 @@
 import os
+from typing import Literal
 
 from datasets.arrow_dataset import Dataset as HFDataset
 from optuna import Trial
+from pydantic import BaseModel
 
 import wandb
-from seahorse.config.experiment_config import RunConfig
 from seahorse.data.collator import SeahorseDataCollator
-from seahorse.data.dataset_construction import construct_dataset
+from seahorse.data.dataset_construction import DataConfig, construct_dataset
 from seahorse.experiments.experiment_utils import (
     enable_transformers_logging,
     print_gpu_memory_usage,
 )
 from seahorse.experiments.optuna_callback import OptunaCallback
-from seahorse.models.construction import construct_seahorse
+from seahorse.models.construction import ModelingConfig, construct_seahorse
 from seahorse.train.seahorse_trainer import SeahorseTrainer, SeahorseTrainingArguments
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 WANDB_PROJECT = "seahorse"
+
+
+class RunConfig(BaseModel):
+    modeling_config: ModelingConfig
+    training_arguments: SeahorseTrainingArguments
+    data_config: DataConfig
+    job_type: Literal["training", "pretrain", "instr-tune"] = "training"
 
 
 def run_training(run_config: RunConfig, optuna_trial: Trial | None = None) -> None:
@@ -54,7 +62,9 @@ def run_training(run_config: RunConfig, optuna_trial: Trial | None = None) -> No
             data_collator=collator,
             callbacks=callbacks,
         )
-        trainer.train()
 
-        model.to("cpu")  # needed in order to actually free the GPU memory for follow up jobs
-        del train_ds, model, collator, trainer
+        try:
+            trainer.train()
+        finally:
+            model.to("cpu")  # needed in order to actually free the GPU memory for follow up jobs
+            del train_ds, model, collator, trainer

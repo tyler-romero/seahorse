@@ -6,11 +6,6 @@ from seahorse.models.seahorse import DEFAULT_IMAGE_TOKEN, SeahorseModel
 
 
 @pytest.fixture(scope="module")
-def seahorse():
-    return SeahorseModel()
-
-
-@pytest.fixture(scope="module")
 def seahorse_data_collator(seahorse: SeahorseModel):
     return SeahorseDataCollator(seahorse)
 

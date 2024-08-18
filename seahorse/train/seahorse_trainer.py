@@ -35,6 +35,7 @@ class SeahorseTrainingArguments(TrainingArguments):
     warmup_ratio: float = 0.03
     lr_scheduler_type: str = "cosine"
     dataloader_num_workers: int = 8
+    group_by_length: bool = False
 
     #
     # Eval-related arguments
@@ -54,11 +55,12 @@ class SeahorseTrainingArguments(TrainingArguments):
     run_name: str = "default-change-me"
     output_dir: str = "./results/default-change-me"
     save_strategy: str = IntervalStrategy.STEPS
+    save_safetensors: bool = False
     save_steps: int = 10000
     save_total_limit: int | None = 1
     report_to: str = "wandb"
     logging_dir: str = "./logs"
-    logging_steps: int = 100
+    logging_steps: int = 10
     include_num_input_tokens_seen: bool = True
 
     def __post_init__(self):
@@ -76,7 +78,7 @@ class SeahorseTrainer(Trainer):
             # the column of a huggingface dataset. This is a workaround
             # taken from LLaVA's implementation of `Trainer`
             # https://github.com/haotian-liu/LLaVA/blob/main/llava/train/llava_trainer.py#L140
-            lengths = self.train_dataset.lengths  # type: ignore
+            lengths = self.train_dataset["length"]  # type: ignore
             print("Using LengthGroupedSampler")
             return LengthGroupedSampler(
                 batch_size=self.args.train_batch_size * self.args.gradient_accumulation_steps,
@@ -87,8 +89,8 @@ class SeahorseTrainer(Trainer):
 
     def _get_parameter_groups(self) -> dict:
         # Inspired by unsloth's implementation of `Trainer`
-        # Separate the parameters of the model into two groups: one for the embeddings
-        # and one for the rest of the model.
+        # Separate the parameters of the model into two groups:
+        # one for the embeddings, and one for the rest of the model
         param_groups = {"non_embeddings": {}, "embeddings": {}}
         for name, param in self.model.named_parameters():
             if not param.requires_grad:
@@ -117,10 +119,6 @@ class SeahorseTrainer(Trainer):
         return Trainer.get_optimizer_cls_and_kwargs(args, model)
 
     def create_optimizer(self):
-        embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
-        if embedding_learning_rate is None:
-            return super().create_optimizer()
-
         if self.optimizer is None:
             decay_parameters = self.get_decay_parameter_names(self.model)
             parameter_groups = self._get_parameter_groups()
@@ -129,6 +127,11 @@ class SeahorseTrainer(Trainer):
                 self.args
             )
             lr = optimizer_kwargs["lr"]
+
+            embedding_learning_rate = getattr(self.args, "embedding_learning_rate", None)
+            if embedding_learning_rate is None:
+                embedding_learning_rate = lr
+
             optimizer_grouped_parameters = [
                 # Embeddings
                 {

@@ -2,51 +2,26 @@ from copy import deepcopy
 
 import optuna
 from optuna.trial import Trial
-from peft.tuners.lora import LoraConfig
 from transformers.trainer_utils import IntervalStrategy
 
-from seahorse.config.configuration_seahorse import SeahorseConfig
-from seahorse.config.experiment_config import ModelingConfig, RunConfig
 from seahorse.data.dataset_construction import DataConfig, DatasetSpec
 from seahorse.experiments.experiment_utils import randstr
+from seahorse.models.construction import ModelingConfig
 from seahorse.train.seahorse_trainer import SeahorseTrainingArguments
+from seahorse.train.train import RunConfig
 
 
 def get_default_job_config() -> RunConfig:
     return RunConfig(
-        modeling_config=ModelingConfig(
-            seahorse_config=SeahorseConfig(
-                language_model="microsoft/Phi-3-mini-4k-instruct",
-                lm_revision="c1358f8a35e6d2af81890deffbbfa575b978c62f",  # phi3.5
-                vision_encoder="vit_base_patch16_clip_224.openai",
-                with_image_patch_positional_embeddings=None,
-                freeze_lm_input_output=False,
-            ),
-            peft_config=LoraConfig(
-                r=8,  # 128 caused divergence
-                lora_alpha=8,
-                # A regex that matches the names of linear layers within Phi3
-                target_modules=r"^language_model.*(?:down_proj|gate_up_proj|o_proj|qkv_proj)$",
-                modules_to_save=[
-                    "vision_projector",
-                    "img_pos_embed",
-                    "language_model.lm_head",
-                    "language_model.model.embed_tokens",
-                ],
-                lora_dropout=0.05,
-                bias="none",
-                init_lora_weights="pissa_niter_15",  # type: ignore
-                use_dora=False,  # using dora led to no improvement but was 2x as slow
-                task_type="CAUSAL_LM",
-            ),
-        ),
-        data_config=DataConfig(dataset_specs=[DatasetSpec(name="llava_pretrain_cc3m")]),
+        modeling_config=ModelingConfig(),
+        data_config=DataConfig(dataset_specs=[DatasetSpec(name="llava_v1_5_mix665k_ift")]),
         training_arguments=SeahorseTrainingArguments(
             run_name="baseline",
+            output_dir="./results/baseline",
             num_train_epochs=1,
             per_device_train_batch_size=8,
             gradient_accumulation_steps=1,
-            gradient_checkpointing=False,  # if enabled, slows training by ~20%
+            gradient_checkpointing=True,  # if enabled, slows training by ~20%
             torch_compile=False,  # doesnt make a big difference either way
             bf16=True,
             optim="adamw_torch_fused",
@@ -60,7 +35,7 @@ def get_default_job_config() -> RunConfig:
             eval_strategy=IntervalStrategy.STEPS,
             eval_steps=2500,
             eval_on_start=False,
-            metric_for_best_model="eval/loss",
+            metric_for_best_model="eval_loss",
             greater_is_better=False,
         ),  # type: ignore
     )
@@ -71,7 +46,8 @@ def pretrain() -> list[RunConfig]:
 
     # Model is frozen except for projection layer
     base_job.modeling_config.peft_config = None
-    base_job.modeling_config.seahorse_config.freeze_lm_input_output = True
+    base_job.modeling_config.seahorse_config.freeze_llm_input = True
+    base_job.modeling_config.seahorse_config.freeze_llm_output = True
 
     # Llava Pretrain Dataset
     base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_pretrain_cc3m")])
@@ -90,12 +66,24 @@ def pretrain_sweep() -> list[tuple[RunConfig, Trial]]:
     study = optuna.create_study(
         sampler=sampler, pruner=pruner, direction="minimize", study_name="pretrain_sweep"
     )
+    # study.enqueue_trial(
+    #     params={
+    #         "with_image_patch_positional_embeddings": None,
+    #         "learning_rate": 1e-3,
+    #         "freeze_llm_input": True,
+    #     }
+    # )
 
     n_trials = 100
-    new_job = deepcopy(pretrain_base)
     for i in range(n_trials):
+        new_job = deepcopy(pretrain_base)
         trial = study.ask()
         new_job.training_arguments.run_name = f"pretrain-{i}-{randstr()}"
+        new_job.training_arguments.output_dir = f"./results/{new_job.training_arguments.run_name}"
+
+        new_job.modeling_config.seahorse_config.freeze_llm_input = trial.suggest_categorical(
+            "freeze_llm_input", [True, False]
+        )
 
         new_job.modeling_config.seahorse_config.with_image_patch_positional_embeddings = (  # type: ignore
             trial.suggest_categorical(
@@ -104,18 +92,23 @@ def pretrain_sweep() -> list[tuple[RunConfig, Trial]]:
             )
         )
         new_job.training_arguments.learning_rate = trial.suggest_float(
-            "learning_rate", 1e-5, 5e-3, log=True
+            "learning_rate", 8e-4, 1e-2, log=False
         )
-
-        new_job.training_arguments.optim = trial.suggest_categorical(
-            "optim", ["adamw_torch_fused", "adamw_schedulefree"]
-        )
-        if new_job.training_arguments.optim == "adamw_schedulefree":
-            new_job.training_arguments.lr_scheduler_type = "constant"
-            new_job.training_arguments.warmup_ratio = 0.0
-            new_job.training_arguments.warmup_steps = 2200
 
         yield new_job, trial
+
+
+def instr_tune() -> list[RunConfig]:
+    base_job = get_default_job_config()
+
+    # Peft model is used
+
+    # Llava Pretrain Dataset
+    base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_v1_5_mix665k_ift")])
+
+    base_job.training_arguments.run_name = f"ift-{randstr()}"
+    base_job.job_type = "instr-tune"
+    return [base_job]
 
 
 def find_good_learning_rate() -> list[RunConfig]:

@@ -5,10 +5,9 @@ import sys
 import torch
 from devtools import pprint
 
-from seahorse.config.experiment_config import RunConfig
 from seahorse.experiments import experiment_registry
 from seahorse.experiments.experiment_utils import print_gpu_memory_usage
-from seahorse.train.train import run_training
+from seahorse.train.train import RunConfig, run_training
 
 
 def print_usage():

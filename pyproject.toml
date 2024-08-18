@@ -23,6 +23,7 @@ devtools = "^0.12.2"
 wandb = "^0.17.4"
 pandas = "^2.2.2"
 optuna = "^3.6.1"
+scipy = "^1.14.0"
 
 [tool.poetry.group.dev.dependencies]
 notebook = "^7.2.1"

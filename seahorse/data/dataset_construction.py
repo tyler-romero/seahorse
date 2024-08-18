@@ -3,12 +3,14 @@ from datasets.arrow_dataset import Dataset as HFDataset
 from pydantic import BaseModel, Field
 
 from seahorse.data.data_prep.llava_pretrain_cc3m import make_llava_pretrain_cc3m
+from seahorse.data.data_prep.llava_v1_5_mix665k_ift import make_llava_v1_5_mix665k_ift
 from seahorse.data.data_prep.the_cauldron import make_the_cauldron
 from seahorse.models.seahorse import SeahorseModel
 
 DATASET_REGISTRY = {
     "the_cauldron": make_the_cauldron,
     "llava_pretrain_cc3m": make_llava_pretrain_cc3m,
+    "llava_v1_5_mix665k_ift": make_llava_v1_5_mix665k_ift,
 }
 
 
@@ -17,7 +19,12 @@ class DatasetSpec(BaseModel):
     kwargs: dict = Field(default_factory=dict)
 
     def construct(self, model: SeahorseModel) -> HFDataset:
-        make_fn = DATASET_REGISTRY[self.name]
+        try:
+            make_fn = DATASET_REGISTRY[self.name]
+        except KeyError as ex:
+            raise KeyError(
+                f"Unknown dataset: {self.name}, expected one of {list(DATASET_REGISTRY.keys())}"
+            ) from ex
         return make_fn(model, **self.kwargs)
 
 

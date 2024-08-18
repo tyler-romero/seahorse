@@ -1,18 +1,13 @@
 import random
 
-import pytest
 from datasets.arrow_dataset import Dataset as HFDataset
 from PIL.Image import Image as PILImage
 
 from seahorse.data.data_prep.cv_bench import make_cv_bench
 from seahorse.data.data_prep.llava_pretrain_cc3m import make_llava_pretrain_cc3m
+from seahorse.data.data_prep.llava_v1_5_mix665k_ift import make_llava_v1_5_mix665k_ift
 from seahorse.data.data_prep.the_cauldron import make_the_cauldron
 from seahorse.models.seahorse import SeahorseModel
-
-
-@pytest.fixture(scope="module")
-def seahorse():
-    return SeahorseModel(config=None)
 
 
 def test_make_the_cauldron(seahorse: SeahorseModel, capsys):
@@ -75,6 +70,23 @@ Provide a brief description of the given image.
 <image><|end|>
 <|assistant|>
 olive oil is a healthy ingredient used liberally .<|end|>
+<|endoftext|>"""  # NOTE: add_generation_prompt=False here, so <|endoftext|> is added
+    ), ds[0]["text"]
+    assert isinstance(ds[0]["image"], PILImage)
+
+
+def test_make_llava_v1_5_mix665k_ift(seahorse: SeahorseModel, capsys):
+    with capsys.disabled():
+        ds: HFDataset = make_llava_v1_5_mix665k_ift(seahorse, load_multimodal_only=True)
+    assert len(ds) == 624610
+    assert set(ds.column_names) == set(["text", "image", "length"])
+    assert (
+        ds[0]["text"]
+        == """<|user|>
+<image>
+Is the bus driving down the street or pulled off to the side?<|end|>
+<|assistant|>
+The bus is driving down the street, which is crowded with people and other vehicles.<|end|>
 <|endoftext|>"""  # NOTE: add_generation_prompt=False here, so <|endoftext|> is added
     ), ds[0]["text"]
     assert isinstance(ds[0]["image"], PILImage)
