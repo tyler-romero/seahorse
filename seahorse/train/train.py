@@ -1,5 +1,5 @@
 import os
-from typing import Literal
+from enum import StrEnum
 
 from datasets.arrow_dataset import Dataset as HFDataset
 from optuna import Trial
@@ -8,6 +8,7 @@ from pydantic import BaseModel
 import wandb
 from seahorse.data.collator import SeahorseDataCollator
 from seahorse.data.dataset_construction import DataConfig, construct_dataset
+from seahorse.eval.eval_callback import SeahorseEvalCallback
 from seahorse.experiments.experiment_utils import (
     enable_transformers_logging,
     print_gpu_memory_usage,
@@ -21,11 +22,16 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 WANDB_PROJECT = "seahorse"
 
 
+class JobType(StrEnum):
+    PRETRAIN = "pretrain"
+    INSTR_TUNE = "instr_tune"
+
+
 class RunConfig(BaseModel):
     modeling_config: ModelingConfig
     training_arguments: SeahorseTrainingArguments
     data_config: DataConfig
-    job_type: Literal["training", "pretrain", "instr-tune"] = "training"
+    job_type: JobType  # TODO: refactor this to training_arguments.job_type
 
 
 def run_training(run_config: RunConfig, optuna_trial: Trial | None = None) -> None:
@@ -46,7 +52,15 @@ def run_training(run_config: RunConfig, optuna_trial: Trial | None = None) -> No
         train_ds = ds_splits["train"]
         eval_ds = ds_splits["test"]
 
-        collator = SeahorseDataCollator(model=model)
+        ift_mask = run_config.job_type == JobType.INSTR_TUNE
+        user_token_id: int = model.tokenizer.convert_tokens_to_ids("<|user|>")  # type: ignore
+        assistant_token_id: int = model.tokenizer.convert_tokens_to_ids("<|assistant|>")  # type: ignore
+        collator = SeahorseDataCollator(
+            model=model,
+            ift_mask=ift_mask,
+            user_token=user_token_id,
+            assistant_token=assistant_token_id,
+        )
 
         args: SeahorseTrainingArguments = run_config.training_arguments
 

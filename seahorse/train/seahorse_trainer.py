@@ -60,7 +60,7 @@ class SeahorseTrainingArguments(TrainingArguments):
     save_total_limit: int | None = 1
     report_to: str = "wandb"
     logging_dir: str = "./logs"
-    logging_steps: int = 10
+    logging_steps: int = 5
     include_num_input_tokens_seen: bool = True
 
     def __post_init__(self):

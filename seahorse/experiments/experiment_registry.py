@@ -8,11 +8,12 @@ from seahorse.data.dataset_construction import DataConfig, DatasetSpec
 from seahorse.experiments.experiment_utils import randstr
 from seahorse.models.construction import ModelingConfig
 from seahorse.train.seahorse_trainer import SeahorseTrainingArguments
-from seahorse.train.train import RunConfig
+from seahorse.train.train import JobType, RunConfig
 
 
 def get_default_job_config() -> RunConfig:
     return RunConfig(
+        job_type=JobType.PRETRAIN,
         modeling_config=ModelingConfig(),
         data_config=DataConfig(dataset_specs=[DatasetSpec(name="llava_v1_5_mix665k_ift")]),
         training_arguments=SeahorseTrainingArguments(
@@ -33,7 +34,7 @@ def get_default_job_config() -> RunConfig:
             dataloader_num_workers=8,
             # Eval args
             eval_strategy=IntervalStrategy.STEPS,
-            eval_steps=2500,
+            eval_steps=5000,
             eval_on_start=False,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
@@ -44,8 +45,8 @@ def get_default_job_config() -> RunConfig:
 def pretrain() -> list[RunConfig]:
     base_job = get_default_job_config()
 
-    # Model is frozen except for projection layer
-    base_job.modeling_config.peft_config = None
+    # model is frozen except for projection layer
+    base_job.modeling_config.peft_config = None  # disable lora adapter
     base_job.modeling_config.seahorse_config.freeze_llm_input = True
     base_job.modeling_config.seahorse_config.freeze_llm_output = True
 
@@ -53,8 +54,22 @@ def pretrain() -> list[RunConfig]:
     base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_pretrain_cc3m")])
 
     base_job.training_arguments.run_name = f"pretrain-{randstr()}"
+    base_job.training_arguments.output_dir = f"./results/{base_job.training_arguments.run_name}"
     base_job.training_arguments.embedding_learning_rate = None
-    base_job.job_type = "pretrain"
+    base_job.job_type = JobType.PRETRAIN
+    return [base_job]
+
+
+def instr_tune() -> list[RunConfig]:
+    base_job = get_default_job_config()
+
+    # lora adapter is used to tune llm by default is used
+    base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_v1_5_mix665k_ift")])
+    base_job.training_arguments.run_name = f"ift-{randstr()}"
+    base_job.job_type = JobType.INSTR_TUNE
+    base_job.training_arguments.output_dir = f"./results/{base_job.training_arguments.run_name}"
+    base_job.training_arguments.eval_on_start = False
+    base_job.training_arguments.weight_decay = 0.01
     return [base_job]
 
 
@@ -96,19 +111,6 @@ def pretrain_sweep() -> list[tuple[RunConfig, Trial]]:
         )
 
         yield new_job, trial
-
-
-def instr_tune() -> list[RunConfig]:
-    base_job = get_default_job_config()
-
-    # Peft model is used
-
-    # Llava Pretrain Dataset
-    base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_v1_5_mix665k_ift")])
-
-    base_job.training_arguments.run_name = f"ift-{randstr()}"
-    base_job.job_type = "instr-tune"
-    return [base_job]
 
 
 def find_good_learning_rate() -> list[RunConfig]:

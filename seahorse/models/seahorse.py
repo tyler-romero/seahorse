@@ -101,12 +101,13 @@ class SeahorseModel(PreTrainedModel):
 
         self.generation_config = GenerationConfig(
             bos_token_id=self.tokenizer.bos_token_id,
-            eos_token_id=[
-                32000,
-                32001,
-                32007,
-            ],  # phi3 specific: <|endoftext|>, <|assistant|>, <|end|>
+            eos_token_id=[  # # phi3 specific generation eos tokens
+                self.tokenizer.convert_tokens_to_ids("<|assistant|>"),
+                self.tokenizer.convert_tokens_to_ids("<|end|>"),
+                self.tokenizer.convert_tokens_to_ids("<|endoftext|>"),
+            ],
             pad_token_id=self.tokenizer.pad_token_id,
+            max_new_tokens=64,
         )
 
         self._specify_trainable_params()

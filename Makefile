@@ -1,4 +1,4 @@
-.PHONY: help
+.PHONY: help test run-experiment
 .DEFAULT_GOAL := help
 
 define PRINT_HELP_PYSCRIPT
@@ -20,14 +20,9 @@ export PRINT_HELP_PYSCRIPT
 help: ## Print a description of all targets
 	@python -c "$$PRINT_HELP_PYSCRIPT" < $(MAKEFILE_LIST)
 
-install-env: ## Create a new environment and install seahorse dependencies into it
-	bash create_python_env.sh seahorse
-
-install:  ## Install seahorse dependencies
-	poetry install
-
-TEST_ARGS =
-
 test: ## Run tests (may require a GPU)
-	CUDA_LAUNCH_BLOCKING=1 pytest --tb=native --show-capture=stdout \
-		--log-cli-level DEBUG --durations=10 ${TEST_ARGS}
+	CUDA_LAUNCH_BLOCKING=1 uv run pytest --tb=native --show-capture=stdout \
+		--log-cli-level DEBUG --durations=10 $(filter-out $@,$(MAKECMDGOALS))
+
+run-experiment: ## Run an experiment defined in experiments/experiment_registry.py (e.g. `make run-experiment pretrain`)
+	uv run python seahorse/experiments/run_experiment.py $(filter-out $@,$(MAKECMDGOALS))
