@@ -33,9 +33,16 @@ make run-experiment pretrain
 
 This will look for the function `pretrain()` in the [experiment registry](seahorse/experiments/experiment_registry.py) and execute it to create a (set of) experiment configuration(s). Then for each of those configurations, a training run will be launched.
 
+### Evaluation
+Evaluation is performed via the [`lmms-eval` library](https://github.com/EvolvingLMMs-Lab/lmms-eval).
+
 
 ## Running tests
 To run the unit tests for the project, use the `test` task:
 ```bash
 make test
+```
+To run a specific test, run
+```bash
+make test TEST_ARGS="-k test_seahorse_tokenizer"
 ```

@@ -9,7 +9,7 @@ readme = "README.md"
 requires-python = "~=3.11"
 dependencies = [
     "bitsandbytes~=0.43",
-    "datasets~=2.20",
+    "datasets~=2.16",
     "devtools>=0.12.2",
     "numpy~=1.26",
     "optuna~=3.6",
@@ -23,17 +23,21 @@ dependencies = [
     "timm~=1.0",
     "torch==2.3.0",
     "torchvision~=0.18.0",
-    "transformers~=4.42",
+    "transformers~=4.39",
     "triton~=2.3.0",
     "wandb>=0.17.4",
-    "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3+cu123torch2.3cxx11abiFALSE-cp311-cp311-linux_x86_64.whl"
+    "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3+cu123torch2.3cxx11abiFALSE-cp311-cp311-linux_x86_64.whl",
+    "lmms-eval @ git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git@22ed307",
 ]
 
 [tool.uv]
 dev-dependencies = [
     "matplotlib~=3.8",
-    "notebook >=7.2",
+    "notebook >=7.0",
     "pytest >=7.4",
+]
+override-dependencies = [
+    "transformers~=4.42",  # override unneeded constraint from lmms-eval
 ]
 
 [tool.setuptools]

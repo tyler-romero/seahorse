@@ -20,17 +20,17 @@ def _ablate_image(example: dict, how: str = "random"):
 
 
 def _make_messages(prompt: str, image: bool) -> list[dict[str, str]]:
-    if image:
-        # TODO: evaluate choice to put image at front of message
-        prompt = f"{DEFAULT_IMAGE_TOKEN}\n{prompt}"
+    # all examples in pope have images
+    # TODO: evaluate choice to put image at front of message
+    prompt = f"{DEFAULT_IMAGE_TOKEN}\n{prompt}"
     return [
         # {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": prompt + PROMPT_SUFFIX},
     ]
 
 
-def _format_for_convo(example: dict, tokenizer) -> dict[str, str | int]:
-    messages = _make_messages(prompt=example["question"], image=example["image"])
+def _format_for_convo(question: str, tokenizer) -> dict[str, str | int]:
+    messages = _make_messages(prompt=question)
     text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     return {"text": text, "length": len(text)}
 
@@ -46,7 +46,7 @@ def make_pope(
     POPE: Polling-based Object Probing Evaluation for Object Hallucination
     https://huggingface.co/datasets/lmms-lab/POPE
 
-    Returns a dataset formatted for the CV-Bench evaluation task. The following columns are retained:
+    Returns a dataset formatted for the POPE evaluation task. The following columns are retained:
     - image: PIL.Image - the image
     - text: str - the formatted text for the conversation, ready for generation
     - length: int - the length of the text
@@ -68,6 +68,7 @@ def make_pope(
     ds = ds.map(
         _format_for_convo,
         fn_kwargs={"tokenizer": model.tokenizer},
+        input_columns=["question"],
         remove_columns=["question"],
         num_proc=num_proc,
         load_from_cache_file=load_from_cache_file,

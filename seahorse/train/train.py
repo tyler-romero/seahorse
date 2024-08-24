@@ -64,7 +64,7 @@ def run_training(run_config: RunConfig, optuna_trial: Trial | None = None) -> No
 
         args: SeahorseTrainingArguments = run_config.training_arguments
 
-        callbacks = []
+        callbacks = [SeahorseEvalCallback(model=model, wandb_run=wandb_run)]
         if optuna_trial is not None:
             callbacks.append(OptunaCallback(trial=optuna_trial))
 

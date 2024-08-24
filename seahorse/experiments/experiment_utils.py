@@ -5,7 +5,7 @@ import torch
 from transformers.utils import logging as transformers_logging
 
 
-def generate_two_word_name():
+def two_word_name() -> str:
     # fmt: off
     adjectives = [
         'happy', 'sunny', 'clever', 'brave', 'gentle', 'kind', 'swift', 'bright',

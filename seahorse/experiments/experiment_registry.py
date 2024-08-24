@@ -5,7 +5,7 @@ from optuna.trial import Trial
 from transformers.trainer_utils import IntervalStrategy
 
 from seahorse.data.dataset_construction import DataConfig, DatasetSpec
-from seahorse.experiments.experiment_utils import randstr
+from seahorse.experiments.experiment_utils import two_word_name
 from seahorse.models.construction import ModelingConfig
 from seahorse.train.seahorse_trainer import SeahorseTrainingArguments
 from seahorse.train.train import JobType, RunConfig
@@ -53,7 +53,7 @@ def pretrain() -> list[RunConfig]:
     # Llava Pretrain Dataset
     base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_pretrain_cc3m")])
 
-    base_job.training_arguments.run_name = f"pretrain-{randstr()}"
+    base_job.training_arguments.run_name = f"pretrain-{two_word_name()}"
     base_job.training_arguments.output_dir = f"./results/{base_job.training_arguments.run_name}"
     base_job.training_arguments.embedding_learning_rate = None
     base_job.job_type = JobType.PRETRAIN
@@ -65,11 +65,11 @@ def instr_tune() -> list[RunConfig]:
 
     # lora adapter is used to tune llm by default is used
     base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_v1_5_mix665k_ift")])
-    base_job.training_arguments.run_name = f"ift-{randstr()}"
+    base_job.training_arguments.run_name = f"ift-{two_word_name()}"
     base_job.job_type = JobType.INSTR_TUNE
     base_job.training_arguments.output_dir = f"./results/{base_job.training_arguments.run_name}"
     base_job.training_arguments.eval_on_start = False
-    base_job.training_arguments.weight_decay = 0.01
+    # base_job.training_arguments.weight_decay = 0.01
     return [base_job]
 
 
@@ -93,7 +93,7 @@ def pretrain_sweep() -> list[tuple[RunConfig, Trial]]:
     for i in range(n_trials):
         new_job = deepcopy(pretrain_base)
         trial = study.ask()
-        new_job.training_arguments.run_name = f"pretrain-{i}-{randstr()}"
+        new_job.training_arguments.run_name = f"pretrain-{i}-{two_word_name()}"
         new_job.training_arguments.output_dir = f"./results/{new_job.training_arguments.run_name}"
 
         new_job.modeling_config.seahorse_config.freeze_llm_input = trial.suggest_categorical(
@@ -122,7 +122,7 @@ def find_good_learning_rate() -> list[RunConfig]:
 
             job = get_default_job_config()
             job.training_arguments.learning_rate = lr
-            job.training_arguments.run_name = f"baseline-lr{lr}-emblr{emb_lr}-{randstr()}"
+            job.training_arguments.run_name = f"baseline-lr{lr}-emblr{emb_lr}-{two_word_name()}"
             jobs.append(job)
     return jobs
 
@@ -145,6 +145,6 @@ def schedulefree_sweep() -> list[RunConfig]:
                 job.training_arguments.warmup_steps = warmup_steps
                 job.training_arguments.adam_beta1 = beta1
                 job.training_arguments.run_name = (
-                    f"schedulefree-lr{lr}-warmup{warmup_steps}-b1{beta1}-{randstr()}"
+                    f"schedulefree-lr{lr}-warmup{warmup_steps}-b1{beta1}-{two_word_name()}"
                 )
                 yield job

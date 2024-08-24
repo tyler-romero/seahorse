@@ -67,12 +67,14 @@ def make_the_cauldron(
     load_from_cache_file: bool = False,
 ) -> HFDataset:
     """
+    The Cauldron is a massive collection of 50 vision-language datasets (training sets only)
+    that were used for the fine-tuning of the vision-language model Idefics2.
     https://huggingface.co/datasets/HuggingFaceM4/the_cauldron
     """
     system_prompts: list[str] = SUBSET_TO_SYSTEM_PROMPTS[subset]
     ds: HFDataset = load_dataset("HuggingFaceM4/the_cauldron", subset, split=split)  # type: ignore
 
-    prefix = f"{subset}/{split}: "
+    prefix = f"TheCauldron/{subset}/{split}: "
     ds = ds.map(
         _validate_and_extract,
         remove_columns=["texts", "images"],

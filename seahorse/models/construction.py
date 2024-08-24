@@ -15,12 +15,11 @@ from seahorse.models.vision_encoder import TimmEncoder
 
 
 class LanguageModelConfig(BaseModel):
-    language_model: str = "microsoft/Phi-3-mini-4k-instruct"
+    language_model: str = "microsoft/Phi-3.5-mini-instruct"
     from_pretrained_kwargs: dict = {
-        "revision": "c1358f8a35e6d2af81890deffbbfa575b978c62f",
         "torch_dtype": torch.bfloat16,
-        "attn_implementation": "flash_attention_2",  # pip install flash_attn
-        "trust_remote_code": True,
+        "attn_implementation": "flash_attention_2",
+        "trust_remote_code": False,
         "use_safetensors": True,
     }
 

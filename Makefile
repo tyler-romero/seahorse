@@ -22,7 +22,7 @@ help: ## Print a description of all targets
 
 test: ## Run tests (may require a GPU)
 	CUDA_LAUNCH_BLOCKING=1 uv run pytest --tb=native --show-capture=stdout \
-		--log-cli-level DEBUG --durations=10 $(filter-out $@,$(MAKECMDGOALS))
+		--log-cli-level DEBUG --durations=10 $(TEST_ARGS)
 
 run-experiment: ## Run an experiment defined in experiments/experiment_registry.py (e.g. `make run-experiment pretrain`)
-	uv run python seahorse/experiments/run_experiment.py $(filter-out $@,$(MAKECMDGOALS))
+	uv run python seahorse/experiments/run_experiment.py $(filter-out test,$(MAKECMDGOALS))
