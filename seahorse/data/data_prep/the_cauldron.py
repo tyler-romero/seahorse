@@ -64,7 +64,7 @@ def make_the_cauldron(
     split: str = "train",
     ablate_images: str | bool = False,
     num_proc: int = 16,
-    load_from_cache_file: bool = False,
+    load_from_cache_file: bool = True,
 ) -> HFDataset:
     """
     The Cauldron is a massive collection of 50 vision-language datasets (training sets only)

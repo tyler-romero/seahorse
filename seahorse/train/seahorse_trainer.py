@@ -2,8 +2,7 @@ from dataclasses import dataclass
 
 import torch
 from transformers.modeling_utils import PreTrainedModel
-from transformers.trainer import Trainer, has_length
-from transformers.trainer_pt_utils import LengthGroupedSampler
+from transformers.trainer import Trainer
 from transformers.trainer_utils import IntervalStrategy
 from transformers.training_args import TrainingArguments
 
@@ -21,7 +20,7 @@ class SeahorseTrainingArguments(TrainingArguments):
     #
     num_train_epochs: int = 1
     max_steps: int = -1
-    per_device_train_batch_size: int = 8
+    per_device_train_batch_size: int = 16
     gradient_accumulation_steps: int = 1
     gradient_checkpointing: bool = False  # if enabled, slows training by ~20%
     torch_compile: bool = False  # doesnt make a big difference either way
@@ -58,10 +57,11 @@ class SeahorseTrainingArguments(TrainingArguments):
     save_safetensors: bool = False
     save_steps: int = 10000
     save_total_limit: int | None = 1
-    report_to: str = "wandb"
+    report_to: str = "none"  # We manually set up WandbCallback so custom metrics are logged
     logging_dir: str = "./logs"
-    logging_steps: int = 5
-    include_num_input_tokens_seen: bool = True
+    logging_steps: int = 1  # For EfficiencyCallback
+    include_num_input_tokens_seen: bool = True  # For EfficiencyCallback
+    include_tokens_per_second: bool = False  # this seems to break things
 
     def __post_init__(self):
         super().__post_init__()
@@ -69,24 +69,6 @@ class SeahorseTrainingArguments(TrainingArguments):
 
 
 class SeahorseTrainer(Trainer):
-    def _get_train_sampler(self) -> torch.utils.data.Sampler | None:
-        if self.train_dataset is None or not has_length(self.train_dataset):
-            return None
-
-        if self.args.group_by_length:
-            # get lengths from a property of the dataset instead of from
-            # the column of a huggingface dataset. This is a workaround
-            # taken from LLaVA's implementation of `Trainer`
-            # https://github.com/haotian-liu/LLaVA/blob/main/llava/train/llava_trainer.py#L140
-            lengths = self.train_dataset["length"]  # type: ignore
-            print("Using LengthGroupedSampler")
-            return LengthGroupedSampler(
-                batch_size=self.args.train_batch_size * self.args.gradient_accumulation_steps,
-                lengths=lengths,
-            )
-        else:
-            return super()._get_train_sampler()
-
     def _get_parameter_groups(self) -> dict:
         # Inspired by unsloth's implementation of `Trainer`
         # Separate the parameters of the model into two groups:
@@ -209,3 +191,12 @@ class SeahorseTrainer(Trainer):
         except AttributeError:
             pass
         return output
+
+    def floating_point_ops(self, inputs: dict[str, torch.Tensor]):
+        """
+        Method to compute the number of floating point operations
+            for every backward + forward pass.
+        Profiler revealed that this takes a non-trivial amount of time to compute
+            so we just disable it.
+        """
+        return 0

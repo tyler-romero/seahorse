@@ -4,7 +4,7 @@ from unittest.mock import patch
 import pytest
 
 from seahorse.eval.benchmarks import cv_bench, pope
-from seahorse.eval.eval import run_evaluation
+from seahorse.eval.eval import run_midtraining_evaluation
 from seahorse.eval.eval_utils import PredictionsWithMetadata
 from seahorse.eval.lmms_runner import run_lmms_eval
 from seahorse.models.seahorse import SeahorseModel
@@ -13,7 +13,19 @@ from seahorse.models.seahorse import SeahorseModel
 def test_run_evaluation(seahorse: SeahorseModel, capsys):
     """Run the entire evaluation pipeline."""
     with capsys.disabled():
-        run_evaluation(seahorse)
+        run_midtraining_evaluation(seahorse)
+
+
+@pytest.mark.parametrize("task", ["vqav2_val_lite", "ok_vqa_val2014_lite"])
+def test_run_lmms_eval(seahorse: SeahorseModel, capsys, task: str):
+    with capsys.disabled():
+        print("Running LMMS evaluation on", task)
+        results = run_lmms_eval(seahorse, task=task, limit=10)
+    assert isinstance(results, dict)
+    if "vqav2" in task:
+        assert "vqav2_val_lite/exact_match,none" in results
+    elif "ok_vqa" in task:
+        assert "ok_vqa_val2014_lite/exact_match,none" in results
 
 
 @pytest.mark.parametrize("answer_format", ["choices", "letters", "letters_with_parens"])
@@ -77,15 +89,3 @@ def test_eval_pope_with_model(seahorse: SeahorseModel, capsys):
 
     assert 0.45 < results["pope-random/accuracy"] < 0.55
     assert 0.45 < results["pope-random/roc_auc"] < 0.55
-
-
-@pytest.mark.parametrize("task", ["vqav2_val_lite", "ok_vqa_val2014_lite"])
-def test_run_lmms_eval(seahorse: SeahorseModel, capsys, task: str):
-    with capsys.disabled():
-        print("Running LMMS evaluation on", task)
-        results = run_lmms_eval(seahorse, task=task, limit=10)
-    assert isinstance(results, dict)
-    if "vqav2" in task:
-        assert "vqav2_val_lite/exact_match,none" in results
-    elif "ok_vqa" in task:
-        assert "ok_vqa_val2014_lite/exact_match,none" in results

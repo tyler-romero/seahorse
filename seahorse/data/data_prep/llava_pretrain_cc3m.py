@@ -44,7 +44,7 @@ def make_llava_pretrain_cc3m(
     model: SeahorseModel,
     ablate_images: str | bool = False,
     num_proc: int = 16,
-    load_from_cache_file: bool = False,
+    load_from_cache_file: bool = True,
 ) -> HFDataset:
     """
     https://huggingface.co/datasets/liuhaotian/LLaVA-CC3M-Pretrain-595K

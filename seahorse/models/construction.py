@@ -1,6 +1,7 @@
 import time
 
 import torch
+from liger_kernel.transformers import apply_liger_kernel_to_phi3
 from peft.config import PeftConfig
 from peft.mapping import get_peft_model
 from peft.tuners.lora import LoraConfig
@@ -22,6 +23,7 @@ class LanguageModelConfig(BaseModel):
         "trust_remote_code": False,
         "use_safetensors": True,
     }
+    use_liger_kernel: bool = False
 
 
 class VisionEncoderConfig(BaseModel):
@@ -61,10 +63,16 @@ class ModelingConfig(BaseModel):
 def construct_language_model(
     llm_config: LanguageModelConfig,
 ) -> tuple[AutoModelForCausalLM, PreTrainedTokenizer]:
+    if llm_config.use_liger_kernel:
+        # Monkey-patch HF Phi3 with LigerKernel (does this make sense after loading the model?)
+        print("[Patch 🔧] Patching Phi3 with LigerKernel")
+        apply_liger_kernel_to_phi3()
+
     language_model = AutoModelForCausalLM.from_pretrained(
         llm_config.language_model,
         **llm_config.from_pretrained_kwargs,
     )
+
     tokenizer = AutoTokenizer.from_pretrained(
         llm_config.language_model, revision=llm_config.from_pretrained_kwargs.get("revision")
     )

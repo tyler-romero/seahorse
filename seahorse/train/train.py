@@ -4,6 +4,7 @@ from enum import StrEnum
 from datasets.arrow_dataset import Dataset as HFDataset
 from optuna import Trial
 from pydantic import BaseModel
+from transformers.integrations import WandbCallback
 
 import wandb
 from seahorse.data.collator import SeahorseDataCollator
@@ -15,7 +16,9 @@ from seahorse.experiments.experiment_utils import (
 )
 from seahorse.experiments.optuna_callback import OptunaCallback
 from seahorse.models.construction import ModelingConfig, construct_seahorse
+from seahorse.train.efficiency_callback import EfficiencyCallback
 from seahorse.train.seahorse_trainer import SeahorseTrainer, SeahorseTrainingArguments
+from seahorse.utils.profiling import ProfCallback, maybe_profile
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -25,6 +28,7 @@ WANDB_PROJECT = "seahorse"
 class JobType(StrEnum):
     PRETRAIN = "pretrain"
     INSTR_TUNE = "instr_tune"
+    PROFILE = "profile"
 
 
 class RunConfig(BaseModel):
@@ -64,9 +68,11 @@ def run_training(run_config: RunConfig, optuna_trial: Trial | None = None) -> No
 
         args: SeahorseTrainingArguments = run_config.training_arguments
 
-        callbacks = [SeahorseEvalCallback(model=model, wandb_run=wandb_run)]
-        if optuna_trial is not None:
-            callbacks.append(OptunaCallback(trial=optuna_trial))
+        callbacks = [
+            EfficiencyCallback(),
+            WandbCallback(),
+            SeahorseEvalCallback(model=model, wandb_run=wandb_run),
+        ]
 
         trainer = SeahorseTrainer(
             model=model,
@@ -77,8 +83,17 @@ def run_training(run_config: RunConfig, optuna_trial: Trial | None = None) -> No
             callbacks=callbacks,
         )
 
-        try:
-            trainer.train()
-        finally:
-            model.to("cpu")  # needed in order to actually free the GPU memory for follow up jobs
-            del train_ds, model, collator, trainer
+        if optuna_trial is not None:
+            trainer.add_callback(OptunaCallback(trial=optuna_trial))
+
+        do_profile = run_config.job_type == JobType.PROFILE
+        with maybe_profile(do_profile) as prof:
+            if do_profile:
+                trainer.add_callback(ProfCallback(prof))
+
+            try:
+                trainer.train()
+            finally:
+                # needed in order to actually free the GPU memory for follow up jobs
+                model.to("cpu")
+                del train_ds, model, collator, trainer

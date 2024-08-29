@@ -28,6 +28,7 @@ dependencies = [
     "wandb>=0.17.4",
     "flash-attn @ https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3+cu123torch2.3cxx11abiFALSE-cp311-cp311-linux_x86_64.whl",
     "lmms-eval @ git+https://github.com/EvolvingLMMs-Lab/lmms-eval.git@22ed307",
+    "liger-kernel-nightly>=0.1.0",
 ]
 
 [tool.uv]

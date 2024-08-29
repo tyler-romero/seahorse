@@ -71,7 +71,6 @@ def make_llava_v1_5_mix665k_ift(
     df = pd.read_json(
         (LLAVA_INSTRUCT_PATH / "llava_v1_5_mix665k.json").as_posix(),
     ).drop(columns=["id", "model"])
-    ds = HFDataset.from_pandas(df, preserve_index=False)
 
     df["has_image"] = df["image"].notnull()
     if load_multimodal_only:

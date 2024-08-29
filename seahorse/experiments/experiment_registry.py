@@ -62,14 +62,18 @@ def pretrain() -> list[RunConfig]:
 
 def instr_tune() -> list[RunConfig]:
     base_job = get_default_job_config()
-
-    # lora adapter is used to tune llm by default is used
-    base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_v1_5_mix665k_ift")])
-    base_job.training_arguments.run_name = f"ift-{two_word_name()}"
     base_job.job_type = JobType.INSTR_TUNE
     base_job.training_arguments.output_dir = f"./results/{base_job.training_arguments.run_name}"
     base_job.training_arguments.eval_on_start = False
+    base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_v1_5_mix665k_ift")])
+
+    # lora adapter is used to tune llm by default is used
+    bs = 8
+    base_job.training_arguments.per_device_train_batch_size = bs
+    base_job.modeling_config.llm_config.use_liger_kernel = True
+    base_job.training_arguments.group_by_length = True
     # base_job.training_arguments.weight_decay = 0.01
+    base_job.training_arguments.run_name = f"ift-liger-norope-gbl-bs{bs}-{two_word_name()}"
     return [base_job]
 
 
@@ -148,3 +152,30 @@ def schedulefree_sweep() -> list[RunConfig]:
                     f"schedulefree-lr{lr}-warmup{warmup_steps}-b1{beta1}-{two_word_name()}"
                 )
                 yield job
+
+
+def profile() -> list[RunConfig]:
+    base_job = get_default_job_config()
+    base_job.job_type = JobType.PROFILE
+    base_job.training_arguments.output_dir = f"./results/{base_job.training_arguments.run_name}"
+
+    # Disable eval
+    base_job.training_arguments.eval_strategy = IntervalStrategy.NO
+    base_job.training_arguments.do_eval = False
+    base_job.training_arguments.eval_on_start = False
+
+    # Just run a few steps for profiling
+    base_job.training_arguments.max_steps = 50
+
+    base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_v1_5_mix665k_ift")])
+
+    # lora adapter is used to tune llm by default is used
+    bs = 8
+    use_liger = True
+    base_job.training_arguments.per_device_train_batch_size = bs
+    base_job.modeling_config.llm_config.use_liger_kernel = use_liger
+
+    base_job.training_arguments.run_name = (
+        f"profile-{'liger-' if use_liger else ''}bs{bs}-{two_word_name()}"
+    )
+    return [base_job]
