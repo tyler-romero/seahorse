@@ -115,13 +115,11 @@ class SeahorseModel(PreTrainedModel):
     def _specify_trainable_params(self):
         # Freeze the vision encoder
         logger.info("[Frozen 🥶] vision encoder")
-        for param in self.vision_encoder.parameters():
-            param.requires_grad = False
+        self.vision_encoder.requires_grad_(False)
 
         # Freeze the language model...
         logger.info("[Frozen 🥶] language model")
-        for name, param in self.language_model.named_parameters():
-            param.requires_grad = False
+        self.language_model.requires_grad_(False)
 
         # ...except for the embedding table and the lm_head
         # Note: without lm_head requiring a grad, torch.compile doesn't work
@@ -139,14 +137,12 @@ class SeahorseModel(PreTrainedModel):
 
         # Make sure the vision projector is trainable
         logger.info("[Trainable 🔥] projector")
-        for param in self.vision_projector.parameters():
-            param.requires_grad = True
+        self.vision_projector.requires_grad_(True)
 
         # And the image positional embeddings
         logger.info("[Trainable 🔥] image positional embeddings")
         if self.img_pos_embed is not None:
-            for param in self.img_pos_embed.parameters():
-                param.requires_grad = True
+            self.img_pos_embed.requires_grad_(True)
 
     def setup_tokenizer_for_vision(self, tokenizer: PreTrainedTokenizer) -> PreTrainedTokenizer:
         self.tokenizer = tokenizer

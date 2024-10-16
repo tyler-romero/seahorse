@@ -5,6 +5,7 @@ from liger_kernel.transformers import apply_liger_kernel_to_phi3
 from peft.config import PeftConfig
 from peft.mapping import get_peft_model
 from peft.tuners.lora import LoraConfig
+from peft.utils.save_and_load import get_peft_model_state_dict, set_peft_model_state_dict
 from pydantic import BaseModel, Field
 from transformers.models.auto.modeling_auto import AutoModelForCausalLM
 from transformers.models.auto.tokenization_auto import AutoTokenizer
@@ -23,11 +24,12 @@ class LanguageModelConfig(BaseModel):
         "trust_remote_code": False,
         "use_safetensors": True,
     }
-    use_liger_kernel: bool = False
+    use_liger_kernel: bool = True
+    use_torch_compile: bool = False
 
 
 class VisionEncoderConfig(BaseModel):
-    timm_model: str = "vit_base_patch16_clip_224.openai"
+    timm_model: str = "vit_base_patch16_siglip_224.webli"
     output_layer: int = -1
 
 
@@ -58,20 +60,26 @@ class ModelingConfig(BaseModel):
     vision_encoder_config: VisionEncoderConfig = Field(default_factory=VisionEncoderConfig)
     seahorse_config: SeahorseConfig = Field(default_factory=SeahorseConfig)
     peft_config: PeftConfig | None = Field(default=DEFAULT_LORA_CONFIG)
+    checkpoint_path: str | None = (
+        None  # as opposed to "resume_from_checkpoint", this doesnt load other state
+    )
 
 
 def construct_language_model(
     llm_config: LanguageModelConfig,
 ) -> tuple[AutoModelForCausalLM, PreTrainedTokenizer]:
-    if llm_config.use_liger_kernel:
-        # Monkey-patch HF Phi3 with LigerKernel (does this make sense after loading the model?)
-        print("[Patch 🔧] Patching Phi3 with LigerKernel")
-        apply_liger_kernel_to_phi3()
-
     language_model = AutoModelForCausalLM.from_pretrained(
         llm_config.language_model,
         **llm_config.from_pretrained_kwargs,
     )
+
+    if llm_config.use_torch_compile:
+        language_model = torch.compile(language_model)
+
+    if llm_config.use_liger_kernel:
+        # Monkey-patch HF Phi3 with LigerKernel. Must occur after torch.compile to avoid errors
+        print("[Patch 🔧] Patching Phi3 with LigerKernel")
+        apply_liger_kernel_to_phi3()
 
     tokenizer = AutoTokenizer.from_pretrained(
         llm_config.language_model, revision=llm_config.from_pretrained_kwargs.get("revision")
@@ -118,6 +126,14 @@ def construct_seahorse(
         print(peft_config)
         model = get_peft_model(model, peft_config)
         model.print_trainable_parameters()
+
+    if model_config.checkpoint_path is not None:
+        print(f"[Checkpoint 📦] Loading Seahorse from {model_config.checkpoint_path}")
+        state_dict = torch.load(model_config.checkpoint_path, map_location=device)
+        if peft_config is not None:
+            model = set_peft_model_state_dict(model, state_dict)
+        else:
+            model.load_state_dict(state_dict)
 
     print(f"SeahorseModel constructed in {time.time() - start:.2f}s on {device} with {dtype}")
     return model  # type: ignore

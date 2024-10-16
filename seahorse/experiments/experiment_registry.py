@@ -34,7 +34,7 @@ def get_default_job_config() -> RunConfig:
             dataloader_num_workers=8,
             # Eval args
             eval_strategy=IntervalStrategy.STEPS,
-            eval_steps=5000,
+            eval_steps=2500,
             eval_on_start=False,
             metric_for_best_model="eval_loss",
             greater_is_better=False,
@@ -42,56 +42,73 @@ def get_default_job_config() -> RunConfig:
     )
 
 
-def pretrain() -> list[RunConfig]:
+def pretrain_phase_1() -> list[RunConfig]:
     base_job = get_default_job_config()
+    base_job.job_type = JobType.PRETRAIN
+    base_job.training_arguments.eval_on_start = False
+    base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_pretrain_cc3m")])
 
     # model is frozen except for projection layer
     base_job.modeling_config.peft_config = None  # disable lora adapter
     base_job.modeling_config.seahorse_config.freeze_llm_input = True
     base_job.modeling_config.seahorse_config.freeze_llm_output = True
-
-    # Llava Pretrain Dataset
-    base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_pretrain_cc3m")])
-
-    base_job.training_arguments.run_name = f"pretrain-{two_word_name()}"
-    base_job.training_arguments.output_dir = f"./results/{base_job.training_arguments.run_name}"
     base_job.training_arguments.embedding_learning_rate = None
-    base_job.job_type = JobType.PRETRAIN
+
+    base_job.training_arguments.per_device_train_batch_size = 8
+    base_job.training_arguments.gradient_accumulation_steps = 8
+    base_job.training_arguments.gradient_checkpointing = False
+    base_job.modeling_config.llm_config.use_torch_compile = True
+
+    base_job.training_arguments.run_name = f"pretrain-phase1-{two_word_name()}"
+    base_job.training_arguments.output_dir = f"./results/{base_job.training_arguments.run_name}"
     return [base_job]
 
 
 def instr_tune() -> list[RunConfig]:
     base_job = get_default_job_config()
     base_job.job_type = JobType.INSTR_TUNE
-    base_job.training_arguments.output_dir = f"./results/{base_job.training_arguments.run_name}"
     base_job.training_arguments.eval_on_start = False
     base_job.data_config = DataConfig(dataset_specs=[DatasetSpec(name="llava_v1_5_mix665k_ift")])
+
+    base_job.modeling_config.checkpoint_path = (
+        "./results/pretrain-phase1-radiant-dune/checkpoint-9224"
+    )
 
     # lora adapter is used to tune llm by default is used
     bs = 8
     base_job.training_arguments.per_device_train_batch_size = bs
-    base_job.modeling_config.llm_config.use_liger_kernel = True
     base_job.training_arguments.group_by_length = True
     # base_job.training_arguments.weight_decay = 0.01
+
     base_job.training_arguments.run_name = f"ift-liger-norope-gbl-bs{bs}-{two_word_name()}"
+    base_job.training_arguments.output_dir = f"./results/{base_job.training_arguments.run_name}"
     return [base_job]
 
 
+def resume_instr_tune() -> list[RunConfig]:
+    job = instr_tune()[0]
+    job.training_arguments.resume_from_checkpoint = "./results/baseline/checkpoint-20000"
+    job.training_arguments.run_name = "resume-ift-liger-fixedrope-gbl-bs8-charming-blossom"
+    job.training_arguments.output_dir = f"./results/{job.training_arguments.run_name}"
+    return [job]
+
+
 def pretrain_sweep() -> list[tuple[RunConfig, Trial]]:
-    pretrain_base: RunConfig = pretrain()[0]
+    pretrain_base: RunConfig = pretrain_phase_1()[0]
 
     sampler = optuna.samplers.QMCSampler(qmc_type="sobol")  # Quasi-Monte Carlo sampler
     pruner = optuna.pruners.MedianPruner(n_startup_trials=1, n_warmup_steps=4, interval_steps=1)
     study = optuna.create_study(
-        sampler=sampler, pruner=pruner, direction="minimize", study_name="pretrain_sweep"
+        sampler=sampler, pruner=pruner, direction="minimize", study_name="pretrain_sweep_2"
     )
-    # study.enqueue_trial(
-    #     params={
-    #         "with_image_patch_positional_embeddings": None,
-    #         "learning_rate": 1e-3,
-    #         "freeze_llm_input": True,
-    #     }
-    # )
+    study.enqueue_trial(
+        params={
+            "with_image_patch_positional_embeddings": None,
+            "learning_rate": 1e-3,
+            "freeze_llm_input": True,
+            "gradient_accumulation_steps": 8,
+        }
+    )
 
     n_trials = 100
     for i in range(n_trials):
@@ -112,6 +129,9 @@ def pretrain_sweep() -> list[tuple[RunConfig, Trial]]:
         )
         new_job.training_arguments.learning_rate = trial.suggest_float(
             "learning_rate", 8e-4, 1e-2, log=False
+        )
+        new_job.training_arguments.gradient_accumulation_steps = trial.suggest_int(
+            "gradient_accumulation_steps", 8, 32, step=8
         )
 
         yield new_job, trial

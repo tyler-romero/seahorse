@@ -35,6 +35,7 @@ class SeahorseTrainingArguments(TrainingArguments):
     lr_scheduler_type: str = "cosine"
     dataloader_num_workers: int = 8
     group_by_length: bool = False
+    resume_from_checkpoint: str | None = None
 
     #
     # Eval-related arguments

@@ -92,7 +92,7 @@ def run_training(run_config: RunConfig, optuna_trial: Trial | None = None) -> No
                 trainer.add_callback(ProfCallback(prof))
 
             try:
-                trainer.train()
+                trainer.train(resume_from_checkpoint=args.resume_from_checkpoint)
             finally:
                 # needed in order to actually free the GPU memory for follow up jobs
                 model.to("cpu")

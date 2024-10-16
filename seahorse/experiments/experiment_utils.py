@@ -15,7 +15,11 @@ def two_word_name() -> str:
         'glorious', 'harmonious', 'innovative', 'joyful', 'keen', 'luminous', 'majestic',
         'noble', 'optimistic', 'peaceful', 'radiant', 'splendid', 'tranquil', 'upbeat',
         'vivacious', 'whimsical', 'exuberant', 'youthful', 'zestful', 'adventurous',
-        'blissful', 'cosmic', 'dynamic', 'ethereal', 'flourishing', 'gallant'
+        'blissful', 'cosmic', 'dynamic', 'ethereal', 'flourishing', 'gallant',
+        'magnificent', 'resilient', 'tenacious', 'versatile', 'wondrous', 'exquisite',
+        'intrepid', 'jubilant', 'mystical', 'passionate', 'quirky', 'resplendent',
+        'scintillating', 'triumphant', 'unbound', 'valiant', 'whimsical', 'zany',
+        'alluring', 'benevolent', 'captivating', 'delightful', 'effervescent'
     ]
     nouns = [
         'panda', 'river', 'mountain', 'forest', 'ocean', 'star', 'cloud', 'tiger',
@@ -25,7 +29,11 @@ def two_word_name() -> str:
         'harbor', 'iceberg', 'jungle', 'kaleidoscope', 'lighthouse', 'mirage',
         'nova', 'orchid', 'plateau', 'reef', 'savanna', 'tempest', 'universe',
         'volcano', 'waterfall', 'zenith', 'archipelago', 'beacon', 'citadel',
-        'delta', 'eclipse', 'fountain', 'geyser', 'haven', 'isthmus'
+        'delta', 'eclipse', 'fountain', 'geyser', 'haven', 'isthmus',
+        'labyrinth', 'monolith', 'nectar', 'odyssey', 'prism', 'quantum',
+        'radiance', 'serenity', 'twilight', 'utopia', 'vortex', 'whisper',
+        'xanadu', 'yggdrasil', 'zephyr', 'avalanche', 'borealis', 'cosmos',
+        'dreamscape', 'enigma', 'fathom', 'gossamer', 'halcyon', 'infinity'
     ]
     # fmt: on
     return f"{random.choice(adjectives)}-{random.choice(nouns)}"

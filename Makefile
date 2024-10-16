@@ -25,4 +25,4 @@ test: ## Run tests (may require a GPU)
 		--log-cli-level DEBUG --durations=10 $(TEST_ARGS)
 
 run-experiment: ## Run an experiment defined in experiments/experiment_registry.py (e.g. `make run-experiment pretrain`)
-	uv run python seahorse/experiments/run_experiment.py $(filter-out test,$(MAKECMDGOALS))
+	uv run python seahorse/experiments/run_experiment.py $(filter-out run-experiment,$(MAKECMDGOALS))

@@ -102,7 +102,7 @@ class EfficiencyCallback(TrainerCallback):
         n_decimal_TPS: number of decimal points for TPS
     """
 
-    def __init__(self, n_warmup_steps=2, n_decimal_time=2, n_decimal_memory=2, n_decimal_TPS=2):
+    def __init__(self, n_warmup_steps=10, n_decimal_time=2, n_decimal_memory=2, n_decimal_TPS=2):
         self.state = State(
             n_warmup_steps,
         )
